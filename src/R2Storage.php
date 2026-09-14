@@ -5,7 +5,7 @@ final class R2Storage
 {
     public static function config(): array
     {
-        $account = trim((string)env('R2_ACCOUNT_ID', ''));
+        $account = trim((string)env('R2_ACCOUNT_ID', 'a26bcc0f570221207e6e66981adae363'));
         $endpoint = trim((string)env('R2_ENDPOINT', ''));
         if ($endpoint === '' && $account !== '') {
             $endpoint = 'https://' . $account . '.r2.cloudflarestorage.com';
@@ -14,8 +14,8 @@ final class R2Storage
             'account_id' => $account,
             'bucket' => trim((string)env('R2_BUCKET', 'superamplitude')),
             'endpoint' => rtrim($endpoint, '/'),
-            'catalog_url' => trim((string)env('R2_CATALOG_URL', '')),
-            'public_base_url' => rtrim((string)env('IMAGE_BASE_URL', 'https://imagem.superamplitude.com'), '/'),
+            'catalog_url' => trim((string)env('R2_CATALOG_URL', 'https://catalog.cloudflarestorage.com/a26bcc0f570221207e6e66981adae363/superamplitude')),
+            'public_base_url' => rtrim((string)env('IMAGE_BASE_URL', 'https://img.farmacia.superamplitude.com'), '/'),
             'access_key' => trim((string)env('R2_ACCESS_KEY_ID', '')),
             'secret_key' => trim((string)env('R2_SECRET_ACCESS_KEY', '')),
         ];

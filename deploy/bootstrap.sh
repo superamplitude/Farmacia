@@ -5,6 +5,11 @@ DOMAIN="farmacia.superamplitude.com"
 APP_DIR="/home/superamplitude/htdocs/${DOMAIN}"
 STATE_DIR="/home/superamplitude/.farmacia"
 REPO="https://github.com/superamplitude/Farmacia.git"
+R2_ACCOUNT_ID="a26bcc0f570221207e6e66981adae363"
+R2_BUCKET="superamplitude"
+R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+R2_CATALOG_URL="https://catalog.cloudflarestorage.com/${R2_ACCOUNT_ID}/${R2_BUCKET}"
+IMAGE_BASE_URL="https://img.farmacia.superamplitude.com"
 
 mkdir -p "$STATE_DIR/uploads" "$APP_DIR"
 chmod 700 "$STATE_DIR" "$STATE_DIR/uploads" || true
@@ -24,30 +29,42 @@ cd "$APP_DIR"
 if [ ! -f "$STATE_DIR/.env" ]; then
   cp .env.example "$STATE_DIR/.env"
   chmod 600 "$STATE_DIR/.env"
-  echo "ATENCAO: configure $STATE_DIR/.env antes de liberar produção."
 fi
 
-# Garante que instalações antigas em /Farmacia não contaminem a URL do subdomínio.
-if grep -q '^APP_BASE=/Farmacia$' "$STATE_DIR/.env" 2>/dev/null; then
-  sed -i 's#^APP_BASE=/Farmacia$#APP_BASE=/#' "$STATE_DIR/.env"
-fi
-if grep -q '^APP_URL=' "$STATE_DIR/.env" 2>/dev/null; then
-  sed -i 's#^APP_URL=.*#APP_URL=https://farmacia.superamplitude.com#' "$STATE_DIR/.env"
-else
-  printf '\nAPP_URL=https://farmacia.superamplitude.com\n' >> "$STATE_DIR/.env"
-fi
+set_env() {
+  local key="$1" value="$2" file="$STATE_DIR/.env"
+  if grep -q "^${key}=" "$file"; then
+    sed -i "s#^${key}=.*#${key}=${value}#" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+set_env APP_BASE "/"
+set_env APP_URL "https://${DOMAIN}"
+set_env IMAGE_BASE_URL "$IMAGE_BASE_URL"
+set_env R2_ACCOUNT_ID "$R2_ACCOUNT_ID"
+set_env R2_BUCKET "$R2_BUCKET"
+set_env R2_ENDPOINT "$R2_ENDPOINT"
+set_env R2_CATALOG_URL "$R2_CATALOG_URL"
 
 php -v
 php -l index.php
 php -l admin.php
 php -l api/chat.php
+php -l src/R2Storage.php
 php scripts/import_anvisa.php
 php scripts/sync_images.php || true
 
 HTTP_CODE="$(curl -L -sS -o /tmp/farmacia_health.json -w '%{http_code}' "https://${DOMAIN}/?health=1" || true)"
 echo "HEALTH_HTTP=${HTTP_CODE}"
+IMAGE_HTTP="$(curl -L -sS -o /dev/null -w '%{http_code}' "${IMAGE_BASE_URL}/" || true)"
+echo "IMAGE_CDN_HTTP=${IMAGE_HTTP}"
 if [ "$HTTP_CODE" != "200" ]; then
-  echo "AVISO: deploy concluído, mas o health-check público ainda não retornou HTTP 200. Verifique DNS/vhost/SSL do subdomínio."
+  echo "AVISO: health-check do portal não retornou HTTP 200. Verifique DNS/vhost/SSL."
+fi
+if [ "$IMAGE_HTTP" = "000" ]; then
+  echo "AVISO: o domínio de imagens ainda não respondeu. Verifique o custom domain do R2 no Cloudflare."
 fi
 
-echo "FARMACIA_DEPLOY_OK commit=$(git rev-parse --short HEAD) domain=${DOMAIN} app=${APP_DIR}"
+echo "FARMACIA_DEPLOY_OK commit=$(git rev-parse --short HEAD) domain=${DOMAIN} image_domain=${IMAGE_BASE_URL} app=${APP_DIR}"

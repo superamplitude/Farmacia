@@ -1,51 +1,47 @@
 # Farmácia SuperAmplitude
 
-Sistema de gestão de farmácia e delivery para **`https://farmacia.superamplitude.com`**, preparado para múltiplas farmácias/clientes.
+Sistema de gestão de farmácia, atendimento e delivery em **https://farmacia.superamplitude.com**.
 
-## Arquitetura de domínio
+## Domínios e storage
 
-A Farmácia é um **subdomínio independente**. Não usa `/Farmacia` dentro de `www.superamplitude.com`.
-
-- Portal: `https://farmacia.superamplitude.com/`
+- Portal público: `https://farmacia.superamplitude.com/`
 - Painel: `https://farmacia.superamplitude.com/admin.php`
 - API do chat: `https://farmacia.superamplitude.com/api/chat.php`
-- Imagens: `https://imagem.superamplitude.com/`
-- Raiz de produção esperada: `/home/superamplitude/htdocs/farmacia.superamplitude.com`
+- CDN pública de imagens: `https://img.farmacia.superamplitude.com/`
+- Cloudflare R2 account: `a26bcc0f570221207e6e66981adae363`
+- Bucket: `superamplitude`
+- Endpoint S3: `https://a26bcc0f570221207e6e66981adae363.r2.cloudflarestorage.com`
+- Catálogo R2 informado: `https://catalog.cloudflarestorage.com/a26bcc0f570221207e6e66981adae363/superamplitude`
+- Raiz de produção: `/home/superamplitude/htdocs/farmacia.superamplitude.com`
 - Estado privado: `/home/superamplitude/.farmacia`
 
-## Módulos implementados
+## Módulos
 
-- Loja pública responsiva com busca e carrinho.
-- Catálogo global baseado em dados abertos oficiais da Anvisa.
+- Loja pública responsiva, busca, carrinho e checkout.
+- Catálogo global sincronizado com dados oficiais da Anvisa.
 - Catálogo, estoque e preço separados por farmácia.
-- Upload privado de receita fora da raiz pública do site.
-- Fila de avaliação farmacêutica com aprovação/rejeição e auditoria.
-- Delivery/retirada, zonas de entrega, taxa, faixa de gratuidade e status operacional.
-- Chat com IA para pesquisa interna e respostas informativas sobre medicamentos.
-- Cards de medicamento no chat com nome, princípio ativo, disponibilidade, preço e foto.
-- Imagens preparadas para `https://imagem.superamplitude.com` por manifesto controlado.
-- Super Admin para cadastrar farmácias/clientes.
-- Admin da farmácia para catálogo, estoque, equipe e delivery.
-- Perfis de funcionário: farmacêutico, atendimento, estoque e delivery.
-- Logs de auditoria.
-- Workflow de deploy por GitHub Actions em runner self-hosted.
+- Recebimento privado de receitas e fila de avaliação farmacêutica.
+- Delivery/retirada, zonas, taxas, ETA e estados operacionais.
+- Super Admin, Admin da farmácia e perfis de funcionários.
+- Chat com IA para busca interna, cards de medicamentos e informação geral.
+- Auditoria e trilha operacional.
+- Imagens centralizadas no Cloudflare R2 e servidas pelo domínio `img.farmacia.superamplitude.com`.
 
-## Segurança clínica e de dados
+## Cloudflare R2
 
-A IA é informativa: não diagnostica, não prescreve, não define dose individual e não orienta iniciar/interromper tratamento. Perguntas clínicas sensíveis devem ser validadas pelo farmacêutico ou médico.
+Os identificadores públicos estão no `.env.example`. As credenciais de escrita **não** ficam no GitHub. Configure somente no `.env` privado da VPS:
 
-Receitas ficam em `/home/superamplitude/.farmacia/uploads`, fora da raiz pública. O sistema usa validação de MIME, limite de tamanho, hash SHA-256, sessão segura, CSRF e RBAC.
+```text
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+```
 
-## Anvisa / Bulário / SNCR
+Com essas duas credenciais, `src/R2Storage.php` pode gravar objetos no bucket `superamplitude`. As URLs públicas geradas usam `https://img.farmacia.superamplitude.com/<chave>`.
 
-O catálogo é sincronizado do conjunto oficial de medicamentos da Anvisa e mantém acesso ao Bulário Eletrônico oficial. O SNCR permanece desativado (`SNCR_ENABLED=0`) até existirem credenciais e documentação aplicáveis à operação.
+## Segurança
 
-## Imagens
-
-O projeto não raspa indiscriminadamente fotografias comerciais de terceiros. Configure `IMAGE_MANIFEST_URL` com imagens próprias/licenciadas ou de fonte autorizada e execute `php scripts/sync_images.php`.
+Receitas são armazenadas fora da raiz pública em `/home/superamplitude/.farmacia/uploads`. A IA é informativa e não substitui médico ou farmacêutico, não prescreve e não define dose individual.
 
 ## Deploy
 
-O workflow `.github/workflows/deploy.yml` usa runner `self-hosted, linux, x64`. Com o runner online, qualquer push em `main` executa `deploy/bootstrap.sh` e publica diretamente no subdomínio.
-
-Nunca grave token de runner, chaves da IA, senhas, credenciais de pagamento ou Cloudflare no repositório.
+O workflow `.github/workflows/deploy.yml` usa o runner self-hosted do repositório. Com ele online, qualquer push em `main` executa `deploy/bootstrap.sh`.
