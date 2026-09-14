@@ -3,8 +3,10 @@ set -Eeuo pipefail
 
 MODE="${1:-report}"
 DOMAIN="farmacia.superamplitude.com"
-APP_DIR="/home/superamplitude/htdocs/${DOMAIN}"
-STATE_DIR="/home/superamplitude/.farmacia"
+APP_USER="farmacia"
+APP_HOME="/home/${APP_USER}"
+APP_DIR="${APP_HOME}/htdocs/${DOMAIN}"
+STATE_DIR="${APP_HOME}/.farmacia"
 ENV_FILE="${STATE_DIR}/.env"
 FAILURES=0
 
@@ -32,7 +34,7 @@ if command -v php >/dev/null 2>&1; then
   fi
 fi
 
-for p in /home/superamplitude /home/superamplitude/htdocs "$APP_DIR" "$STATE_DIR"; do
+for p in "$APP_HOME" "$APP_HOME/htdocs" "$APP_DIR" "$STATE_DIR"; do
   if [[ -e "$p" ]]; then
     printf 'PREFLIGHT_PATH %s ' "$p"
     stat -c 'owner=%U group=%G mode=%a' "$p" 2>/dev/null || true
@@ -50,6 +52,12 @@ else
   warn 'private_env=missing_will_be_created_on_first_deploy'
 fi
 
+if [[ -f "/etc/nginx/sites-enabled/${DOMAIN}.conf" || -f "/etc/nginx/sites-available/${DOMAIN}.conf" ]] || grep -RIl --include='*.conf' "$DOMAIN" /etc/nginx/sites-enabled /etc/nginx/sites-available >/dev/null 2>&1; then
+  ok 'cloudpanel_vhost=present'
+else
+  warn 'cloudpanel_vhost=missing'
+fi
+
 if command -v sudo >/dev/null 2>&1 && sudo -n -l /usr/local/sbin/farmacia-fix-permissions >/dev/null 2>&1; then
   ok 'root_permission_helper=available'
 else
@@ -57,11 +65,9 @@ else
 fi
 
 if command -v getfacl >/dev/null 2>&1; then
-  getfacl -cp /home/superamplitude /home/superamplitude/htdocs "$APP_DIR" "$STATE_DIR" 2>/dev/null | sed 's/^/PREFLIGHT_ACL /' || true
+  getfacl -cp "$APP_HOME" "$APP_HOME/htdocs" "$APP_DIR" "$STATE_DIR" 2>/dev/null | sed 's/^/PREFLIGHT_ACL /' || true
 fi
 
 printf 'PREFLIGHT_FAILURES=%d\n' "$FAILURES"
-if [[ "$MODE" == "strict" && "$FAILURES" -gt 0 ]]; then
-  exit 1
-fi
+if [[ "$MODE" == "strict" && "$FAILURES" -gt 0 ]]; then exit 1; fi
 exit 0
