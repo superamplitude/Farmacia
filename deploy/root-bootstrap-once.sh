@@ -21,9 +21,7 @@ fail(){ echo "ROOT_BOOTSTRAP_FAIL $*" >&2; exit 1; }
 on_error(){
   rc=$?
   echo "ROOT_BOOTSTRAP_ERROR exit=${rc}"
-  if [[ "$BACKUP_READY" -eq 1 ]]; then
-    echo "ROLLBACK_READY=bash /root/farmacia-rollback.sh ${BACKUP_DIR}"
-  fi
+  if [[ "$BACKUP_READY" -eq 1 ]]; then echo "ROLLBACK_READY=bash /root/farmacia-rollback.sh ${BACKUP_DIR}"; fi
   exit "$rc"
 }
 trap on_error ERR
@@ -41,14 +39,10 @@ log "Criando backup pré-mudança"
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 if [[ -f "$LEGACY_STATE_DIR/.env" ]]; then cp -a "$LEGACY_STATE_DIR/.env" "$BACKUP_DIR/legacy.env"; fi
-if [[ -f "$LEGACY_STATE_DIR/farmacia.sqlite" ]]; then
-  sqlite3 "$LEGACY_STATE_DIR/farmacia.sqlite" ".backup '$BACKUP_DIR/legacy-farmacia.sqlite'" || cp -a "$LEGACY_STATE_DIR/farmacia.sqlite" "$BACKUP_DIR/legacy-farmacia.sqlite"
-fi
+if [[ -f "$LEGACY_STATE_DIR/farmacia.sqlite" ]]; then sqlite3 "$LEGACY_STATE_DIR/farmacia.sqlite" ".backup '$BACKUP_DIR/legacy-farmacia.sqlite'" || cp -a "$LEGACY_STATE_DIR/farmacia.sqlite" "$BACKUP_DIR/legacy-farmacia.sqlite"; fi
 if [[ -d "$LEGACY_APP_DIR" ]]; then tar -czf "$BACKUP_DIR/legacy-app.tar.gz" -C "$LEGACY_APP_DIR" . || true; fi
-if [[ -f "/home/${APP_USER}/.farmacia/.env" ]]; then cp -a "/home/${APP_USER}/.farmacia/.env" "$BACKUP_DIR/.env"; fi
-if [[ -f "/home/${APP_USER}/.farmacia/farmacia.sqlite" ]]; then
-  sqlite3 "/home/${APP_USER}/.farmacia/farmacia.sqlite" ".backup '$BACKUP_DIR/farmacia.sqlite'" || cp -a "/home/${APP_USER}/.farmacia/farmacia.sqlite" "$BACKUP_DIR/farmacia.sqlite"
-fi
+if [[ -f "$STATE_DIR/.env" ]]; then cp -a "$STATE_DIR/.env" "$BACKUP_DIR/.env"; fi
+if [[ -f "$STATE_DIR/farmacia.sqlite" ]]; then sqlite3 "$STATE_DIR/farmacia.sqlite" ".backup '$BACKUP_DIR/farmacia.sqlite'" || cp -a "$STATE_DIR/farmacia.sqlite" "$BACKUP_DIR/farmacia.sqlite"; fi
 BACKUP_READY=1
 echo "BACKUP_DIR=${BACKUP_DIR}"
 
@@ -90,8 +84,28 @@ fi
 
 log "Preparando .env privado sem sobrescrever segredos existentes"
 if [[ ! -f "$STATE_DIR/.env" ]]; then cp "$APP_DIR/.env.example" "$STATE_DIR/.env"; fi
-sed -i 's#^PRIVATE_STATE_DIR=.*#PRIVATE_STATE_DIR=/home/farmacia/.farmacia#' "$STATE_DIR/.env" || true
-sed -i 's#^DB_DSN=sqlite:/home/superamplitude/.farmacia/farmacia.sqlite#DB_DSN=sqlite:/home/farmacia/.farmacia/farmacia.sqlite#' "$STATE_DIR/.env" || true
+set_env_private(){
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "$STATE_DIR/.env"; then sed -i "s#^${key}=.*#${key}=${value}#" "$STATE_DIR/.env"; else printf '%s=%s\n' "$key" "$value" >> "$STATE_DIR/.env"; fi
+}
+get_env_private(){ grep "^${1}=" "$STATE_DIR/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true; }
+set_env_private PRIVATE_STATE_DIR "$STATE_DIR"
+set_env_private DB_DSN "sqlite:${STATE_DIR}/farmacia.sqlite"
+
+if [[ -z "$(get_env_private APP_KEY)" ]]; then set_env_private APP_KEY "$(openssl rand -hex 32)"; fi
+if [[ -z "$(get_env_private SUPERADMIN_EMAIL)" ]]; then set_env_private SUPERADMIN_EMAIL 'admin@superamplitude.com'; fi
+if [[ -z "$(get_env_private SUPERADMIN_PASSWORD)" ]]; then
+  ADMIN_PASSWORD="F4rmA!$(openssl rand -hex 14)"
+  set_env_private SUPERADMIN_PASSWORD "$ADMIN_PASSWORD"
+  {
+    printf 'SUPERADMIN_EMAIL=%q\n' "$(get_env_private SUPERADMIN_EMAIL)"
+    printf 'SUPERADMIN_PASSWORD=%q\n' "$ADMIN_PASSWORD"
+    printf 'CREATED_AT=%q\n' "$(date -Is)"
+  } > /root/.farmacia-superadmin
+  chmod 600 /root/.farmacia-superadmin
+  unset ADMIN_PASSWORD
+  echo 'SUPERADMIN_CREDENTIALS=/root/.farmacia-superadmin'
+fi
 /usr/local/sbin/farmacia-fix-permissions
 
 log "Instalando rollback root local"
