@@ -53,8 +53,21 @@ php -l index.php
 php -l admin.php
 php -l api/chat.php
 php -l src/R2Storage.php
+php -l scripts/r2_check.php
 php scripts/import_anvisa.php
 php scripts/sync_images.php || true
+
+R2_ACCESS="$(grep '^R2_ACCESS_KEY_ID=' "$STATE_DIR/.env" | cut -d= -f2- || true)"
+R2_SECRET="$(grep '^R2_SECRET_ACCESS_KEY=' "$STATE_DIR/.env" | cut -d= -f2- || true)"
+if [ -n "$R2_ACCESS" ] && [ -n "$R2_SECRET" ]; then
+  if php scripts/r2_check.php; then
+    echo "R2_WRITE=ok"
+  else
+    echo "R2_WRITE=failed"
+  fi
+else
+  echo "R2_WRITE=pending_private_credentials"
+fi
 
 HTTP_CODE="$(curl -L -sS -o /tmp/farmacia_health.json -w '%{http_code}' "https://${DOMAIN}/?health=1" || true)"
 echo "HEALTH_HTTP=${HTTP_CODE}"
