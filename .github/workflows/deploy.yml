@@ -1,17 +1,41 @@
 name: Deploy Farmacia
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 concurrency:
   group: farmacia-production
   cancel-in-progress: false
+
 jobs:
   deploy:
-    runs-on: self-hosted
-    timeout-minutes: 30
+    runs-on: [self-hosted, farmacia, production]
+    timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Diagnose environment
+        run: bash deploy/preflight.sh report
+
+      - name: Repair deployment permissions
+        run: |
+          if sudo -n /usr/local/sbin/farmacia-fix-permissions; then
+            echo "ROOT_PERMISSION_REPAIR=ok"
+          else
+            echo "ROOT_PERMISSION_REPAIR=unavailable"
+          fi
+
+      - name: Enforce production preflight
+        run: bash deploy/preflight.sh strict
+
       - name: Deploy production
-        run: bash deploy/bootstrap.sh
+        run: bash deploy/bootstrap-v2.sh
+
+      - name: Verify production
+        run: bash deploy/verify.sh
