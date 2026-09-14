@@ -37,5 +37,6 @@ jobs:
       - name: Deploy production
         run: bash deploy/bootstrap-v2.sh
 
-      - name: Verify production
+      - name: Verify production and collect evidence
+        if: always()
         run: bash deploy/verify.sh
