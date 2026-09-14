@@ -17,7 +17,7 @@ log(){ printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 fail(){ echo "ROOT_BOOTSTRAP_FAIL $*" >&2; exit 1; }
 on_error(){
   rc=$?
-  echo "ROOT_BOOTSTRAP_ERROR exit=${rc}"
+  echo "ROOT_BOOTSTRAP_ERROR exit=${rc} line=${BASH_LINENO[0]} command=${BASH_COMMAND}" >&2
   if [[ "$BACKUP_READY" -eq 1 ]]; then echo "ROLLBACK_READY=bash /root/farmacia-rollback.sh ${BACKUP_DIR}"; fi
   exit "$rc"
 }
@@ -75,9 +75,12 @@ FARMACIA_PROVISION_MARKER="$BACKUP_DIR/cloudpanel-site-created" bash /root/farma
 farmacia_layout_load strict
 id "$APP_USER" >/dev/null 2>&1 || fail "Site User detectado não existe: $APP_USER"
 [[ -d "$APP_DIR" ]] || fail "document root detectado não existe: $APP_DIR"
+APP_GROUP="$(id -gn "$APP_USER")"
+[[ -n "$APP_GROUP" ]] || fail "grupo primário do Site User não encontrado: $APP_USER"
 cp /etc/farmacia-superamplitude/layout.env "$BACKUP_DIR/layout.env"
 chmod 600 "$BACKUP_DIR/layout.env"
 echo "ACTIVE_SITE_USER=${APP_USER}"
+echo "ACTIVE_SITE_GROUP=${APP_GROUP}"
 echo "ACTIVE_APP_DIR=${APP_DIR}"
 echo "ACTIVE_STATE_DIR=${STATE_DIR}"
 
@@ -88,9 +91,9 @@ chmod 0755 /usr/local/sbin/farmacia-fix-permissions.new
 mv /usr/local/sbin/farmacia-fix-permissions.new /usr/local/sbin/farmacia-fix-permissions
 printf '%s\n' 'farmrunner ALL=(root) NOPASSWD: /usr/local/sbin/farmacia-fix-permissions' > /etc/sudoers.d/farmacia-runner-permissions
 chmod 0440 /etc/sudoers.d/farmacia-runner-permissions
-visudo -cf /etc/sudoers.d/farmacia-runner-permissions >/dev/null
+visudo -cf /etc/sudoers.d/farmacia-runner-permissions
 mkdir -p "$STATE_DIR/uploads" "$STATE_DIR/backups"
-chown -R "$APP_USER:$APP_USER" "$STATE_DIR"
+chown -R "$APP_USER:$APP_GROUP" "$STATE_DIR"
 /usr/local/sbin/farmacia-fix-permissions
 
 log "Preservando/migrando estado válido"
@@ -162,6 +165,7 @@ printf '\n============================================================\n'
 printf ' FARMACIA SUPERAMPLITUDE - BOOTSTRAP CONCLUÍDO\n'
 printf '============================================================\n'
 printf 'CLOUDPANEL_SITE_USER=%s\n' "$APP_USER"
+printf 'CLOUDPANEL_SITE_GROUP=%s\n' "$APP_GROUP"
 printf 'APP_DIR=%s\n' "$APP_DIR"
 printf 'STATE_DIR=%s\n' "$STATE_DIR"
 printf 'BACKUP_DIR=%s\n' "$BACKUP_DIR"
