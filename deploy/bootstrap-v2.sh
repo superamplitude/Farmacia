@@ -3,9 +3,10 @@ set -Eeuo pipefail
 umask 0007
 
 DOMAIN="farmacia.superamplitude.com"
-APP_USER="superamplitude"
-APP_DIR="/home/superamplitude/htdocs/${DOMAIN}"
-STATE_DIR="/home/superamplitude/.farmacia"
+APP_USER="farmacia"
+APP_HOME="/home/${APP_USER}"
+APP_DIR="${APP_HOME}/htdocs/${DOMAIN}"
+STATE_DIR="${APP_HOME}/.farmacia"
 R2_ACCOUNT_ID="a26bcc0f570221207e6e66981adae363"
 R2_BUCKET="superamplitude"
 R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -18,7 +19,7 @@ fail(){ echo "DEPLOY_FAIL $*" >&2; exit 1; }
 log "Preflight"
 bash deploy/preflight.sh strict
 
-[[ -d "$APP_DIR/.git" ]] || fail "produção ainda não foi inicializada; execute deploy/repair-permissions.sh como root uma única vez"
+[[ -d "$APP_DIR/.git" ]] || fail "produção não inicializada; execute deploy/repair-permissions.sh como root uma única vez"
 [[ -d "$STATE_DIR" ]] || fail "estado privado ausente: $STATE_DIR"
 
 log "Sincronizando produção com main"
@@ -28,26 +29,20 @@ git -C "$APP_DIR" clean -fd
 cd "$APP_DIR"
 
 log "Preparando configuração privada"
-if [[ ! -f "$STATE_DIR/.env" ]]; then
-  cp .env.example "$STATE_DIR/.env"
-fi
+if [[ ! -f "$STATE_DIR/.env" ]]; then cp .env.example "$STATE_DIR/.env"; fi
 chmod 640 "$STATE_DIR/.env" || true
-if command -v setfacl >/dev/null 2>&1; then
-  setfacl -m "u:${APP_USER}:r,m:rw" "$STATE_DIR/.env" || true
-fi
+if command -v setfacl >/dev/null 2>&1; then setfacl -m "u:${APP_USER}:rw-,m:rw" "$STATE_DIR/.env" || true; fi
 [[ -r "$STATE_DIR/.env" ]] || fail "runner não consegue ler o .env privado"
 
 set_env() {
   local key="$1" value="$2" file="$STATE_DIR/.env"
-  if grep -q "^${key}=" "$file"; then
-    sed -i "s#^${key}=.*#${key}=${value}#" "$file"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$file"
-  fi
+  if grep -q "^${key}=" "$file"; then sed -i "s#^${key}=.*#${key}=${value}#" "$file"; else printf '%s=%s\n' "$key" "$value" >> "$file"; fi
 }
 
 set_env APP_BASE "/"
 set_env APP_URL "https://${DOMAIN}"
+set_env PRIVATE_STATE_DIR "$STATE_DIR"
+set_env DB_DSN "sqlite:${STATE_DIR}/farmacia.sqlite"
 set_env IMAGE_BASE_URL "$IMAGE_BASE_URL"
 set_env R2_ACCOUNT_ID "$R2_ACCOUNT_ID"
 set_env R2_BUCKET "$R2_BUCKET"
@@ -78,4 +73,4 @@ else
   echo "R2_WRITE=pending_private_credentials"
 fi
 
-echo "FARMACIA_DEPLOY_OK commit=$(git rev-parse --short HEAD) domain=${DOMAIN} app=${APP_DIR}"
+echo "FARMACIA_DEPLOY_OK commit=$(git rev-parse --short HEAD) domain=${DOMAIN} app=${APP_DIR} state=${STATE_DIR}"
