@@ -8,7 +8,7 @@ RUNNER_USER="${FARMACIA_RUNNER_USER:-farmrunner}"
 RUNNER_DIR="${FARMACIA_RUNNER_DIR:-/opt/actions-runner-farmacia}"
 LABELS="${FARMACIA_RUNNER_LABELS:-farmacia,production}"
 RUNNER_SERVICE="github-actions-farmacia"
-APP_USER="farmacia"
+LAYOUT_FILE="/etc/farmacia-superamplitude/layout.env"
 PUBLIC_URL="https://farmacia.superamplitude.com"
 
 log(){ printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
@@ -97,9 +97,9 @@ systemctl enable --now "$RUNNER_SERVICE"
 sleep 3
 systemctl is-active --quiet "$RUNNER_SERVICE" || fail 'runner não iniciou'
 
-# O helper só pode ser aplicado depois que o CloudPanel criar o usuário de site isolado.
+# Permissões do site só são aplicadas quando o bootstrap root já validou o vhost real.
 ROOT_HELPER_STATUS=pending_cloudpanel_bootstrap
-if id "$APP_USER" >/dev/null 2>&1; then
+if [[ -r "$LAYOUT_FILE" ]]; then
   log 'Instalando helper de permissões restrito'
   curl -fsSL https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/fix-permissions-root.sh -o /usr/local/sbin/farmacia-fix-permissions.new
   chown root:root /usr/local/sbin/farmacia-fix-permissions.new
