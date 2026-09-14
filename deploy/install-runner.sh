@@ -11,25 +11,21 @@ RUNNER_USER="${FARMACIA_RUNNER_USER:-farmrunner}"
 RUNNER_DIR="${FARMACIA_RUNNER_DIR:-/opt/actions-runner-farmacia}"
 LABELS="${FARMACIA_RUNNER_LABELS:-farmacia,production}"
 RUNNER_SERVICE="github-actions-farmacia"
+APP_USER="superamplitude"
+APP_DIR="/home/superamplitude/htdocs/farmacia.superamplitude.com"
 STATE_DIR="/home/superamplitude/.farmacia"
 PUBLIC_URL="https://farmacia.superamplitude.com"
 
 log(){ printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 fail(){ echo "ERRO: $*" >&2; exit 1; }
-
-cleanup_secrets(){
-  unset RUNNER_TOKEN FARMACIA_RUNNER_TOKEN R2_ACCESS_INPUT R2_SECRET_INPUT || true
-}
+cleanup_secrets(){ unset RUNNER_TOKEN FARMACIA_RUNNER_TOKEN || true; }
 trap cleanup_secrets EXIT
 
 [[ $EUID -eq 0 ]] || fail "execute como root"
-
-# Evita o erro getcwd quando o comando é disparado de um diretório que outro
-# instalador acabou de remover/recriar.
 cd /root
 
 if [[ -z "$RUNNER_TOKEN" ]]; then
-  printf 'Cole o token NOVO do GitHub Runner da Farmacia e pressione ENTER: '
+  printf 'Cole o token do GitHub Runner da Farmacia e pressione ENTER: '
   IFS= read -r -s RUNNER_TOKEN
   printf '\n'
 fi
@@ -41,9 +37,10 @@ RUNNER_TOKEN="${RUNNER_TOKEN//$'\n'/}"
 export DEBIAN_FRONTEND=noninteractive
 log "Preparando dependências"
 apt-get update -y >/dev/null
-apt-get install -y curl jq tar gzip ca-certificates sudo git php-cli php-curl php-sqlite3 >/dev/null
+apt-get install -y curl jq tar gzip ca-certificates sudo git php-cli php-curl php-sqlite3 acl >/dev/null
 
 id "$RUNNER_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash "$RUNNER_USER"
+id "$APP_USER" >/dev/null 2>&1 || fail "usuario $APP_USER nao existe"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -72,9 +69,6 @@ tar xzf "/tmp/$PKG" -C "$RUNNER_DIR"
 rm -f "/tmp/$PKG"
 chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR"
 
-[[ -x "$RUNNER_DIR/config.sh" ]] || fail "config.sh não foi instalado"
-[[ -x "$RUNNER_DIR/run.sh" ]] || fail "run.sh não foi instalado"
-
 log "Registrando runner exclusivo no repositório da Farmacia"
 cd "$RUNNER_DIR"
 sudo -u "$RUNNER_USER" ./config.sh \
@@ -85,7 +79,7 @@ sudo -u "$RUNNER_USER" ./config.sh \
   --work "_work" \
   --unattended \
   --replace
-unset RUNNER_TOKEN FARMACIA_RUNNER_TOKEN || true
+cleanup_secrets
 
 log "Criando serviço systemd"
 cat >"/etc/systemd/system/${RUNNER_SERVICE}.service" <<UNIT
@@ -116,24 +110,26 @@ systemctl is-active --quiet "$RUNNER_SERVICE" || {
   fail "runner da Farmacia não iniciou"
 }
 
-log "Preparando estado privado da Farmacia"
-mkdir -p "$STATE_DIR/uploads"
-chmod 700 "$STATE_DIR" "$STATE_DIR/uploads" || true
+log "Preparando diretórios e permissões de deploy"
+mkdir -p "$APP_DIR" "$STATE_DIR/uploads"
+chown "$APP_USER:$APP_USER" "$APP_DIR" "$STATE_DIR" "$STATE_DIR/uploads"
+chmod 750 /home/superamplitude || true
+chmod 750 /home/superamplitude/htdocs || true
+chmod 2770 "$APP_DIR" "$STATE_DIR" "$STATE_DIR/uploads"
+setfacl -m "u:${RUNNER_USER}:--x" /home/superamplitude
+setfacl -m "u:${RUNNER_USER}:r-x" /home/superamplitude/htdocs
+setfacl -R -m "u:${RUNNER_USER}:rwX,u:${APP_USER}:rwX" "$APP_DIR" "$STATE_DIR"
+find "$APP_DIR" "$STATE_DIR" -type d -exec setfacl -m "d:u:${RUNNER_USER}:rwx,d:u:${APP_USER}:rwx" {} +
+if [[ -f "$STATE_DIR/.env" ]]; then chmod 600 "$STATE_DIR/.env" || true; fi
+sudo -u "$RUNNER_USER" touch "$APP_DIR/.farmrunner-write-test" "$STATE_DIR/.farmrunner-write-test"
+rm -f "$APP_DIR/.farmrunner-write-test" "$STATE_DIR/.farmrunner-write-test"
 
-# Se o .env já existir, apenas preserva. As credenciais nunca são gravadas no GitHub.
-if [[ -f "$STATE_DIR/.env" ]]; then
-  chmod 600 "$STATE_DIR/.env" || true
-fi
-
-log "Aguardando o workflow da Farmacia ser consumido pelo runner"
+log "Aguardando o workflow da Farmacia"
 READY=0
 HTTP_CODE="000"
 for _ in $(seq 1 24); do
   HTTP_CODE="$(curl -L -k -sS -o /tmp/farmacia-public-health.out -w '%{http_code}' "${PUBLIC_URL}/?health=1" || true)"
-  if [[ "$HTTP_CODE" == "200" ]]; then
-    READY=1
-    break
-  fi
+  if [[ "$HTTP_CODE" == "200" ]]; then READY=1; break; fi
   sleep 5
 done
 
@@ -144,12 +140,7 @@ printf 'RUNNER_VERSION=%s\n' "$VERSION"
 printf 'RUNNER_NAME=%s\n' "$RUNNER_NAME"
 printf 'RUNNER_DIR=%s\n' "$RUNNER_DIR"
 printf 'RUNNER_SERVICE=%s\n' "$(systemctl is-active "$RUNNER_SERVICE")"
+printf 'RUNNER_WRITE=OK\n'
 printf 'PUBLIC_HTTP=%s\n' "$HTTP_CODE"
-if [[ "$READY" -eq 1 ]]; then
-  printf 'PUBLIC_HEALTH=OK\n'
-else
-  printf 'PUBLIC_HEALTH=AGUARDANDO_DEPLOY_OU_ORIGIN\n'
-fi
-printf '\nRunners ativos:\n'
-ps aux | grep -E 'Runner.Listener|Runner.Worker' | grep -v grep || true
+if [[ "$READY" -eq 1 ]]; then printf 'PUBLIC_HEALTH=OK\n'; else printf 'PUBLIC_HEALTH=AGUARDANDO_DEPLOY_OU_ORIGIN\n'; fi
 printf '============================================================\n'
