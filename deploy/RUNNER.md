@@ -1,17 +1,23 @@
 # Runner self-hosted — Farmácia
 
-O repositório usa o runner self-hosted associado a `superamplitude/Farmacia`.
+O repositório usa o runner dedicado `farmacia-production`, registrado em `superamplitude/Farmacia` com labels `self-hosted`, `farmacia` e `production`.
 
-Com o runner **Online**, um push em `main` executa automaticamente:
-
-```bash
-bash deploy/bootstrap.sh
-```
-
-O deploy publica em:
+Depois do bootstrap inicial como `root`, cada push em `main` executa automaticamente o fluxo de produção:
 
 ```text
-/home/superamplitude/htdocs/farmacia.superamplitude.com
+preflight -> helper restrito de permissões -> deploy -> self-test -> verify
+```
+
+Código de produção:
+
+```text
+/home/farmacia/htdocs/farmacia.superamplitude.com
+```
+
+Estado privado:
+
+```text
+/home/farmacia/.farmacia
 ```
 
 URL pública:
@@ -20,10 +26,6 @@ URL pública:
 https://farmacia.superamplitude.com
 ```
 
-Estado privado:
+O primeiro bootstrap provisiona o site PHP no CloudPanel com um usuário de site exclusivo `farmacia`. Isso mantém o isolamento de filesystem recomendado pelo CloudPanel.
 
-```text
-/home/superamplitude/.farmacia
-```
-
-O token de registro do runner é usado somente no servidor e nunca deve ser gravado no repositório.
+O token de registro do runner é usado somente para registrar o runner e nunca deve ser gravado no repositório. O deploy normal não precisa reutilizar esse token.
