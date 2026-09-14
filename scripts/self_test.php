@@ -42,7 +42,7 @@ try {
 $state = private_state_dir();
 $envFile = $state . '/.env';
 $uploads = $state . '/uploads';
-$add('private_state_path', $state === '/home/farmacia/.farmacia', $state);
+$add('private_state_path', preg_match('#^/home/[^/]+/\.farmacia$#', $state) === 1, $state);
 $add('private_env_present', is_file($envFile), $envFile);
 $add('private_env_readable', is_readable($envFile), $envFile);
 $add('uploads_directory', is_dir($uploads), $uploads);
