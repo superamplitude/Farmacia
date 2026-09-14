@@ -4,18 +4,26 @@ set -Eeuo pipefail
 DOMAIN="farmacia.superamplitude.com"
 PUBLIC_URL="https://${DOMAIN}"
 IMAGE_URL="https://img.farmacia.superamplitude.com"
-APP_DIR="/home/farmacia/htdocs/${DOMAIN}"
-STATE_DIR="/home/farmacia/.farmacia"
 FAIL=0
+
+# shellcheck disable=SC1091
+source "$(dirname "$0")/layout.sh"
+if ! farmacia_layout_load optional; then
+  echo 'VERIFY_FAIL=cloudpanel_layout_undetected'
+  APP_USER="unknown"
+  APP_DIR="/nonexistent"
+  STATE_DIR="/nonexistent"
+  FAIL=1
+fi
 
 code(){ local c; c="$(curl -L -k -sS -o "$2" -w '%{http_code}' "$1" 2>/dev/null || true)"; printf '%s' "${c:-000}"; }
 origin_code(){ local c; c="$(curl -L -k -sS --resolve "${DOMAIN}:443:127.0.0.1" -o "$2" -w '%{http_code}' "$1" 2>/dev/null || true)"; printf '%s' "${c:-000}"; }
 
 SELFTEST=0
-if php "$APP_DIR/scripts/self_test.php" >/tmp/farmacia-self-test.json 2>/tmp/farmacia-self-test.err; then SELFTEST=1; fi
+if [[ -f "$APP_DIR/scripts/self_test.php" ]] && php "$APP_DIR/scripts/self_test.php" >/tmp/farmacia-self-test.json 2>/tmp/farmacia-self-test.err; then SELFTEST=1; fi
 cat /tmp/farmacia-self-test.json 2>/dev/null || true
 cat /tmp/farmacia-self-test.err 2>/dev/null || true
-[[ "$SELFTEST" -eq 1 ]] || FAIL=1
+[[ "$SELFTEST" -eq 1 ]] || { echo 'VERIFY_FAIL=self_test'; FAIL=1; }
 
 PUBLIC_HTTP=000
 ORIGIN_HTTP=000
@@ -29,6 +37,7 @@ done
 ADMIN_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/admin.php" /tmp/farmacia-origin-admin.out)"
 IMAGE_HTTP="$(code "${IMAGE_URL}/" /tmp/farmacia-image-root.out)"
 
+echo "VERIFY_SITE_USER=${APP_USER}"
 echo "VERIFY_APP_DIR=${APP_DIR}"
 echo "VERIFY_STATE_DIR=${STATE_DIR}"
 echo "VERIFY_ORIGIN_HTTP=${ORIGIN_HTTP}"
