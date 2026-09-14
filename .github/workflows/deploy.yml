@@ -1,0 +1,17 @@
+name: Deploy Farmacia
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: farmacia-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Deploy production
+        run: bash deploy/bootstrap.sh
