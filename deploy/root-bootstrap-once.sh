@@ -3,18 +3,15 @@ set -Eeuo pipefail
 umask 0077
 
 DOMAIN="farmacia.superamplitude.com"
-APP_USER="farmacia"
 RUNNER_USER="farmrunner"
-APP_HOME="/home/${APP_USER}"
-APP_DIR="${APP_HOME}/htdocs/${DOMAIN}"
-STATE_DIR="${APP_HOME}/.farmacia"
-LEGACY_APP_DIR="/home/superamplitude/htdocs/${DOMAIN}"
-LEGACY_STATE_DIR="/home/superamplitude/.farmacia"
 REPO="https://github.com/superamplitude/Farmacia.git"
 RUNNER_SERVICE="github-actions-farmacia"
 TS="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="/root/farmacia-backups/${TS}"
 BACKUP_READY=0
+LAYOUT_HELPER="/root/farmacia-layout.sh"
+LEGACY_APP_DIR="/home/superamplitude/htdocs/${DOMAIN}"
+LEGACY_STATE_DIR="/home/superamplitude/.farmacia"
 
 log(){ printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 fail(){ echo "ROOT_BOOTSTRAP_FAIL $*" >&2; exit 1; }
@@ -35,23 +32,54 @@ log "Instalando dependências obrigatórias"
 apt-get update -y >/dev/null
 apt-get install -y acl ca-certificates curl git jq openssl sudo sqlite3 tar gzip php-cli php-curl php-sqlite3 php-mbstring >/dev/null
 
+curl -fsSL https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/layout.sh -o "$LAYOUT_HELPER"
+chmod 0700 "$LAYOUT_HELPER"
+# shellcheck disable=SC1090
+source "$LAYOUT_HELPER"
+
+# Descobre o layout pré-existente antes de qualquer alteração para garantir backup real.
+PRE_APP_DIR=""
+PRE_STATE_DIR=""
+PRE_VHOST="$(farmacia_find_vhost "$DOMAIN" || true)"
+if [[ -n "$PRE_VHOST" ]] && farmacia_layout_from_vhost "$PRE_VHOST"; then
+  PRE_APP_DIR="$APP_DIR"
+  PRE_STATE_DIR="$STATE_DIR"
+fi
+unset APP_USER APP_HOME APP_DIR STATE_DIR VHOST_FILE || true
+
 log "Criando backup pré-mudança"
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
-if [[ -f "$LEGACY_STATE_DIR/.env" ]]; then cp -a "$LEGACY_STATE_DIR/.env" "$BACKUP_DIR/legacy.env"; fi
-if [[ -f "$LEGACY_STATE_DIR/farmacia.sqlite" ]]; then sqlite3 "$LEGACY_STATE_DIR/farmacia.sqlite" ".backup '$BACKUP_DIR/legacy-farmacia.sqlite'" || cp -a "$LEGACY_STATE_DIR/farmacia.sqlite" "$BACKUP_DIR/legacy-farmacia.sqlite"; fi
-if [[ -d "$LEGACY_APP_DIR" ]]; then tar -czf "$BACKUP_DIR/legacy-app.tar.gz" -C "$LEGACY_APP_DIR" . || true; fi
-if [[ -f "$STATE_DIR/.env" ]]; then cp -a "$STATE_DIR/.env" "$BACKUP_DIR/.env"; fi
-if [[ -f "$STATE_DIR/farmacia.sqlite" ]]; then sqlite3 "$STATE_DIR/farmacia.sqlite" ".backup '$BACKUP_DIR/farmacia.sqlite'" || cp -a "$STATE_DIR/farmacia.sqlite" "$BACKUP_DIR/farmacia.sqlite"; fi
+backup_path(){
+  local src="$1" name="$2"
+  [[ -e "$src" ]] || return 0
+  if [[ -d "$src" ]]; then tar -czf "$BACKUP_DIR/${name}.tar.gz" -C "$src" . || true; else cp -a "$src" "$BACKUP_DIR/$name"; fi
+}
+if [[ -n "$PRE_APP_DIR" ]]; then backup_path "$PRE_APP_DIR" pre-app; fi
+if [[ -n "$PRE_STATE_DIR" ]]; then
+  [[ -f "$PRE_STATE_DIR/.env" ]] && cp -a "$PRE_STATE_DIR/.env" "$BACKUP_DIR/pre.env"
+  if [[ -f "$PRE_STATE_DIR/farmacia.sqlite" ]]; then sqlite3 "$PRE_STATE_DIR/farmacia.sqlite" ".backup '$BACKUP_DIR/pre-farmacia.sqlite'" || cp -a "$PRE_STATE_DIR/farmacia.sqlite" "$BACKUP_DIR/pre-farmacia.sqlite"; fi
+fi
+if [[ "$PRE_APP_DIR" != "$LEGACY_APP_DIR" && -d "$LEGACY_APP_DIR" ]]; then backup_path "$LEGACY_APP_DIR" legacy-app; fi
+if [[ "$PRE_STATE_DIR" != "$LEGACY_STATE_DIR" ]]; then
+  [[ -f "$LEGACY_STATE_DIR/.env" ]] && cp -a "$LEGACY_STATE_DIR/.env" "$BACKUP_DIR/legacy.env"
+  if [[ -f "$LEGACY_STATE_DIR/farmacia.sqlite" ]]; then sqlite3 "$LEGACY_STATE_DIR/farmacia.sqlite" ".backup '$BACKUP_DIR/legacy-farmacia.sqlite'" || cp -a "$LEGACY_STATE_DIR/farmacia.sqlite" "$BACKUP_DIR/legacy-farmacia.sqlite"; fi
+fi
 BACKUP_READY=1
 echo "BACKUP_DIR=${BACKUP_DIR}"
 
-log "Provisionando site PHP isolado no CloudPanel"
+log "Validando/provisionando site CloudPanel"
 curl -fsSL https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/provision-cloudpanel.sh -o /root/farmacia-provision-cloudpanel.sh
 chmod 0700 /root/farmacia-provision-cloudpanel.sh
 FARMACIA_PROVISION_MARKER="$BACKUP_DIR/cloudpanel-site-created" bash /root/farmacia-provision-cloudpanel.sh
-id "$APP_USER" >/dev/null 2>&1 || fail "CloudPanel não criou o usuário isolado $APP_USER"
-[[ -d "$APP_DIR" ]] || fail "CloudPanel não criou o document root $APP_DIR"
+farmacia_layout_load strict
+id "$APP_USER" >/dev/null 2>&1 || fail "Site User detectado não existe: $APP_USER"
+[[ -d "$APP_DIR" ]] || fail "document root detectado não existe: $APP_DIR"
+cp /etc/farmacia-superamplitude/layout.env "$BACKUP_DIR/layout.env"
+chmod 600 "$BACKUP_DIR/layout.env"
+echo "ACTIVE_SITE_USER=${APP_USER}"
+echo "ACTIVE_APP_DIR=${APP_DIR}"
+echo "ACTIVE_STATE_DIR=${STATE_DIR}"
 
 log "Instalando helper root restrito"
 curl -fsSL https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/fix-permissions-root.sh -o /usr/local/sbin/farmacia-fix-permissions.new
@@ -65,14 +93,17 @@ mkdir -p "$STATE_DIR/uploads" "$STATE_DIR/backups"
 chown -R "$APP_USER:$APP_USER" "$STATE_DIR"
 /usr/local/sbin/farmacia-fix-permissions
 
-log "Migrando estado legado somente se existir e o novo estado estiver vazio"
-if [[ ! -f "$STATE_DIR/.env" && -f "$LEGACY_STATE_DIR/.env" ]]; then cp -a "$LEGACY_STATE_DIR/.env" "$STATE_DIR/.env"; fi
-if [[ ! -f "$STATE_DIR/farmacia.sqlite" && -f "$LEGACY_STATE_DIR/farmacia.sqlite" ]]; then cp -a "$LEGACY_STATE_DIR/farmacia.sqlite" "$STATE_DIR/farmacia.sqlite"; fi
-if [[ -d "$LEGACY_STATE_DIR/uploads" ]]; then cp -an "$LEGACY_STATE_DIR/uploads/." "$STATE_DIR/uploads/" 2>/dev/null || true; fi
+log "Preservando/migrando estado válido"
+if [[ "$STATE_DIR" != "$LEGACY_STATE_DIR" ]]; then
+  if [[ ! -f "$STATE_DIR/.env" && -f "$LEGACY_STATE_DIR/.env" ]]; then cp -a "$LEGACY_STATE_DIR/.env" "$STATE_DIR/.env"; fi
+  if [[ ! -f "$STATE_DIR/farmacia.sqlite" && -f "$LEGACY_STATE_DIR/farmacia.sqlite" ]]; then cp -a "$LEGACY_STATE_DIR/farmacia.sqlite" "$STATE_DIR/farmacia.sqlite"; fi
+  if [[ -d "$LEGACY_STATE_DIR/uploads" ]]; then cp -an "$LEGACY_STATE_DIR/uploads/." "$STATE_DIR/uploads/" 2>/dev/null || true; fi
+fi
 /usr/local/sbin/farmacia-fix-permissions
 
 log "Inicializando ou sincronizando repositório de produção"
 if [[ ! -d "$APP_DIR/.git" ]]; then
+  # Conteúdo prévio já foi preservado em backup antes desta limpeza.
   find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   sudo -u "$RUNNER_USER" git clone "$REPO" "$APP_DIR"
 else
@@ -91,6 +122,8 @@ set_env_private(){
 get_env_private(){ grep "^${1}=" "$STATE_DIR/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true; }
 set_env_private PRIVATE_STATE_DIR "$STATE_DIR"
 set_env_private DB_DSN "sqlite:${STATE_DIR}/farmacia.sqlite"
+set_env_private APP_BASE "/"
+set_env_private APP_URL "https://${DOMAIN}"
 
 if [[ -z "$(get_env_private APP_KEY)" ]]; then set_env_private APP_KEY "$(openssl rand -hex 32)"; fi
 if [[ -z "$(get_env_private SUPERADMIN_EMAIL)" ]]; then set_env_private SUPERADMIN_EMAIL 'admin@superamplitude.com'; fi
