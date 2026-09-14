@@ -2,11 +2,11 @@
 set -Eeuo pipefail
 
 DOMAIN="farmacia.superamplitude.com"
-SITE_USER="farmacia"
+NEW_SITE_USER="${FARMACIA_SITE_USER:-farmacia}"
 PHP_VERSION="${FARMACIA_PHP_VERSION:-8.2}"
-APP_DIR="/home/${SITE_USER}/htdocs/${DOMAIN}"
 CREDENTIAL_FILE="/root/.farmacia-cloudpanel-site-user"
 MARKER_FILE="${FARMACIA_PROVISION_MARKER:-}"
+LAYOUT_HELPER="/root/farmacia-layout.sh"
 
 log(){ printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 fail(){ echo "CLOUDPANEL_PROVISION_FAIL $*" >&2; exit 1; }
@@ -14,48 +14,51 @@ fail(){ echo "CLOUDPANEL_PROVISION_FAIL $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || fail 'execute como root'
 command -v clpctl >/dev/null 2>&1 || fail 'clpctl não encontrado'
 
-VHOST=""
-for candidate in "/etc/nginx/sites-enabled/${DOMAIN}.conf" "/etc/nginx/sites-available/${DOMAIN}.conf"; do
-  [[ -f "$candidate" ]] && VHOST="$candidate" && break
-done
-if [[ -z "$VHOST" ]]; then
-  VHOST="$(grep -RIl --include='*.conf' "$DOMAIN" /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | head -n1 || true)"
-fi
+curl -fsSL https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/layout.sh -o "$LAYOUT_HELPER"
+chmod 0700 "$LAYOUT_HELPER"
+# shellcheck disable=SC1090
+source "$LAYOUT_HELPER"
 
+VHOST="$(farmacia_find_vhost "$DOMAIN" || true)"
 if [[ -n "$VHOST" ]]; then
   log "Site CloudPanel já possui vhost: $VHOST"
-  if [[ ! -d "/home/${SITE_USER}" ]]; then
-    fail "vhost existe, mas o usuário isolado esperado ${SITE_USER} não existe; não vou alterar um site desconhecido"
+  if ! farmacia_layout_from_vhost "$VHOST"; then
+    ROOT_HINT="$(awk '$1=="root" {gsub(/;/,"",$2); print $2; exit}' "$VHOST" 2>/dev/null || true)"
+    fail "vhost existente não pôde ser validado com segurança (root=${ROOT_HINT:-indefinido}); nada foi alterado"
   fi
-  mkdir -p "$APP_DIR"
-  echo "CLOUDPANEL_SITE=existing"
-  echo "CLOUDPANEL_SITE_USER=${SITE_USER}"
+  farmacia_layout_write
+  mkdir -p "$APP_DIR" "$STATE_DIR/uploads" "$STATE_DIR/backups"
+  echo "CLOUDPANEL_SITE=existing_verified"
+  echo "CLOUDPANEL_SITE_USER=${APP_USER}"
   echo "CLOUDPANEL_APP_DIR=${APP_DIR}"
+  echo "CLOUDPANEL_STATE_DIR=${STATE_DIR}"
+  echo "CLOUDPANEL_VHOST=${VHOST_FILE}"
   exit 0
 fi
 
-if id "$SITE_USER" >/dev/null 2>&1; then
-  fail "usuário ${SITE_USER} já existe sem vhost para ${DOMAIN}; conflito requer inspeção antes de provisionar"
+if id "$NEW_SITE_USER" >/dev/null 2>&1; then
+  fail "usuário ${NEW_SITE_USER} já existe sem vhost para ${DOMAIN}; conflito requer inspeção"
 fi
 
-clpctl vhost-templates:list 2>/dev/null | grep -qi 'Generic' || fail "template CloudPanel Generic não encontrado"
-
+clpctl vhost-templates:list 2>/dev/null | grep -qi 'Generic' || fail 'template CloudPanel Generic não encontrado'
 SITE_PASSWORD="F4rmA!$(openssl rand -hex 12)"
 log "Criando site PHP isolado no CloudPanel"
 clpctl site:add:php \
   --domainName="$DOMAIN" \
   --phpVersion="$PHP_VERSION" \
   --vhostTemplate='Generic' \
-  --siteUser="$SITE_USER" \
+  --siteUser="$NEW_SITE_USER" \
   --siteUserPassword="$SITE_PASSWORD"
 
+VHOST="$(farmacia_find_vhost "$DOMAIN" || true)"
+[[ -n "$VHOST" ]] || fail 'CloudPanel criou o site, mas nenhum vhost foi localizado'
+farmacia_layout_from_vhost "$VHOST" || fail 'vhost recém-criado não possui root CloudPanel válido'
+farmacia_layout_write
 [[ -d "$APP_DIR" ]] || fail "CloudPanel não criou ${APP_DIR}"
-VHOST="$(grep -RIl --include='*.conf' "$DOMAIN" /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | head -n1 || true)"
-[[ -n "$VHOST" ]] || fail 'CloudPanel criou o diretório, mas nenhum vhost foi localizado'
 
 umask 0077
 {
-  printf 'SITE_USER=%q\n' "$SITE_USER"
+  printf 'SITE_USER=%q\n' "$APP_USER"
   printf 'SITE_PASSWORD=%q\n' "$SITE_PASSWORD"
   printf 'DOMAIN=%q\n' "$DOMAIN"
   printf 'CREATED_AT=%q\n' "$(date -Is)"
@@ -77,7 +80,8 @@ nginx -t
 systemctl reload nginx
 
 echo "CLOUDPANEL_SITE=created"
-echo "CLOUDPANEL_SITE_USER=${SITE_USER}"
+echo "CLOUDPANEL_SITE_USER=${APP_USER}"
 echo "CLOUDPANEL_PHP_VERSION=${PHP_VERSION}"
 echo "CLOUDPANEL_APP_DIR=${APP_DIR}"
-echo "CLOUDPANEL_VHOST=${VHOST}"
+echo "CLOUDPANEL_STATE_DIR=${STATE_DIR}"
+echo "CLOUDPANEL_VHOST=${VHOST_FILE}"
