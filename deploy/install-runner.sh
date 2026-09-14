@@ -8,7 +8,7 @@ RUNNER_USER="${FARMACIA_RUNNER_USER:-farmrunner}"
 RUNNER_DIR="${FARMACIA_RUNNER_DIR:-/opt/actions-runner-farmacia}"
 LABELS="${FARMACIA_RUNNER_LABELS:-farmacia,production}"
 RUNNER_SERVICE="github-actions-farmacia"
-APP_USER="superamplitude"
+APP_USER="farmacia"
 PUBLIC_URL="https://farmacia.superamplitude.com"
 
 log(){ printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
@@ -33,9 +33,7 @@ export DEBIAN_FRONTEND=noninteractive
 log 'Preparando dependências'
 apt-get update -y >/dev/null
 apt-get install -y acl ca-certificates curl git jq sudo sqlite3 tar gzip php-cli php-curl php-sqlite3 php-mbstring >/dev/null
-
 id "$RUNNER_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash "$RUNNER_USER"
-id "$APP_USER" >/dev/null 2>&1 || fail "usuário $APP_USER não existe"
 
 case "$(uname -m)" in
   x86_64|amd64) RUNNER_ARCH=x64 ;;
@@ -99,15 +97,20 @@ systemctl enable --now "$RUNNER_SERVICE"
 sleep 3
 systemctl is-active --quiet "$RUNNER_SERVICE" || fail 'runner não iniciou'
 
-log 'Instalando helper de permissões restrito'
-curl -fsSL https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/fix-permissions-root.sh -o /usr/local/sbin/farmacia-fix-permissions.new
-chown root:root /usr/local/sbin/farmacia-fix-permissions.new
-chmod 0755 /usr/local/sbin/farmacia-fix-permissions.new
-mv /usr/local/sbin/farmacia-fix-permissions.new /usr/local/sbin/farmacia-fix-permissions
-printf '%s\n' 'farmrunner ALL=(root) NOPASSWD: /usr/local/sbin/farmacia-fix-permissions' > /etc/sudoers.d/farmacia-runner-permissions
-chmod 0440 /etc/sudoers.d/farmacia-runner-permissions
-visudo -cf /etc/sudoers.d/farmacia-runner-permissions >/dev/null
-/usr/local/sbin/farmacia-fix-permissions
+# O helper só pode ser aplicado depois que o CloudPanel criar o usuário de site isolado.
+ROOT_HELPER_STATUS=pending_cloudpanel_bootstrap
+if id "$APP_USER" >/dev/null 2>&1; then
+  log 'Instalando helper de permissões restrito'
+  curl -fsSL https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/fix-permissions-root.sh -o /usr/local/sbin/farmacia-fix-permissions.new
+  chown root:root /usr/local/sbin/farmacia-fix-permissions.new
+  chmod 0755 /usr/local/sbin/farmacia-fix-permissions.new
+  mv /usr/local/sbin/farmacia-fix-permissions.new /usr/local/sbin/farmacia-fix-permissions
+  printf '%s\n' 'farmrunner ALL=(root) NOPASSWD: /usr/local/sbin/farmacia-fix-permissions' > /etc/sudoers.d/farmacia-runner-permissions
+  chmod 0440 /etc/sudoers.d/farmacia-runner-permissions
+  visudo -cf /etc/sudoers.d/farmacia-runner-permissions >/dev/null
+  /usr/local/sbin/farmacia-fix-permissions
+  ROOT_HELPER_STATUS=installed
+fi
 
 HTTP_CODE="$(curl -L -k -sS -o /tmp/farmacia-runner-health.out -w '%{http_code}' "${PUBLIC_URL}/?health=1" || true)"
 printf '\n============================================================\n'
@@ -117,7 +120,8 @@ printf 'RUNNER_VERSION=%s\n' "$VERSION"
 printf 'RUNNER_NAME=%s\n' "$RUNNER_NAME"
 printf 'RUNNER_DIR=%s\n' "$RUNNER_DIR"
 printf 'RUNNER_SERVICE=%s\n' "$(systemctl is-active "$RUNNER_SERVICE")"
-printf 'ROOT_PERMISSION_HELPER=installed\n'
+printf 'ROOT_PERMISSION_HELPER=%s\n' "$ROOT_HELPER_STATUS"
 printf 'PUBLIC_HTTP=%s\n' "$HTTP_CODE"
+printf 'NEXT_BOOTSTRAP=deploy/repair-permissions.sh\n'
 printf 'STATUS=READY\n'
 printf '============================================================\n'
