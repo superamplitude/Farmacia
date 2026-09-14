@@ -12,8 +12,17 @@ Sistema de gestão de farmácia, atendimento e delivery em **https://farmacia.su
 - Bucket: `superamplitude`
 - Endpoint S3: `https://a26bcc0f570221207e6e66981adae363.r2.cloudflarestorage.com`
 - Catálogo R2 informado: `https://catalog.cloudflarestorage.com/a26bcc0f570221207e6e66981adae363/superamplitude`
-- Raiz de produção: `/home/superamplitude/htdocs/farmacia.superamplitude.com`
-- Estado privado: `/home/superamplitude/.farmacia`
+
+## Arquitetura de produção
+
+A Farmácia é um site PHP independente no CloudPanel e usa um **site user dedicado `farmacia`**, em vez de compartilhar o usuário de outro portal. Isso segue o isolamento de sites do CloudPanel e evita permissões cruzadas.
+
+- Código: `/home/farmacia/htdocs/farmacia.superamplitude.com`
+- Estado privado: `/home/farmacia/.farmacia`
+- Banco SQLite: `/home/farmacia/.farmacia/farmacia.sqlite`
+- Receitas: `/home/farmacia/.farmacia/uploads`
+- Runner: `/opt/actions-runner-farmacia`
+- Serviço do runner: `github-actions-farmacia`
 
 ## Módulos
 
@@ -25,23 +34,42 @@ Sistema de gestão de farmácia, atendimento e delivery em **https://farmacia.su
 - Super Admin, Admin da farmácia e perfis de funcionários.
 - Chat com IA para busca interna, cards de medicamentos e informação geral.
 - Auditoria e trilha operacional.
-- Imagens centralizadas no Cloudflare R2 e servidas pelo domínio `img.farmacia.superamplitude.com`.
+- Imagens centralizadas no Cloudflare R2 e servidas por `img.farmacia.superamplitude.com`.
 
-## Cloudflare R2
+## Segurança e segredos
 
-Os identificadores públicos estão no `.env.example`. As credenciais de escrita **não** ficam no GitHub. Configure somente no `.env` privado da VPS:
+Segredos nunca são versionados. O arquivo real fica em `/home/farmacia/.farmacia/.env`. O bootstrap gera automaticamente `APP_KEY` e uma senha forte inicial do Super Admin quando ainda não existem. A cópia de recuperação da credencial inicial fica somente em `/root/.farmacia-superadmin` com permissão restrita.
+
+As credenciais de escrita do R2 devem existir apenas no `.env` privado:
 
 ```text
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 ```
 
-Com essas duas credenciais, `src/R2Storage.php` pode gravar objetos no bucket `superamplitude`. As URLs públicas geradas usam `https://img.farmacia.superamplitude.com/<chave>`.
+O deploy executa um PUT assinado de teste quando as duas credenciais estão configuradas.
 
-## Segurança
+## Primeiro bootstrap da VPS
 
-Receitas são armazenadas fora da raiz pública em `/home/superamplitude/.farmacia/uploads`. A IA é informativa e não substitui médico ou farmacêutico, não prescreve e não define dose individual.
+Depois que o runner estiver ativo, uma única execução como `root` provisiona o site PHP no CloudPanel, cria backup, instala o helper de permissões restrito, migra eventual estado legado, sincroniza o repositório, importa a Anvisa e executa a validação end-to-end:
 
-## Deploy
+```bash
+cd /root && \
+curl -fsSL https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/repair-permissions.sh \
+-o /root/repair-farmacia.sh && \
+chmod +x /root/repair-farmacia.sh && \
+/root/repair-farmacia.sh
+```
 
-O workflow `.github/workflows/deploy.yml` usa o runner self-hosted do repositório. Com ele online, qualquer push em `main` executa `deploy/bootstrap.sh`.
+Nenhum token de runner é necessário nessa etapa.
+
+## Deploy contínuo
+
+Após o bootstrap inicial, o workflow `.github/workflows/deploy.yml` usa o runner `farmacia-production` com labels `self-hosted`, `farmacia`, `production`. O workflow faz preflight, repara ACLs por um helper root restrito, sincroniza `main`, valida PHP, importa/atualiza a base Anvisa, roda self-test e verifica origin + Cloudflare.
+
+## Limites funcionais ainda explícitos
+
+- Meios de pagamento exibidos no checkout ainda não representam gateways com confirmação por webhook.
+- A IA generativa somente fica ativa quando `AI_ENABLED=1` e endpoint/chave/modelo são configurados no `.env` privado; sem isso o sistema usa busca/fallback informativo.
+- SNCR permanece desativado até credenciais e integração aplicáveis estarem disponíveis.
+- R2 de escrita só é considerado validado após `R2_WRITE=ok`.
