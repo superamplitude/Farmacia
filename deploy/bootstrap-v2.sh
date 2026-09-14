@@ -3,10 +3,6 @@ set -Eeuo pipefail
 umask 0007
 
 DOMAIN="farmacia.superamplitude.com"
-APP_USER="farmacia"
-APP_HOME="/home/${APP_USER}"
-APP_DIR="${APP_HOME}/htdocs/${DOMAIN}"
-STATE_DIR="${APP_HOME}/.farmacia"
 R2_ACCOUNT_ID="a26bcc0f570221207e6e66981adae363"
 R2_BUCKET="superamplitude"
 R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -16,10 +12,14 @@ IMAGE_BASE_URL="https://img.farmacia.superamplitude.com"
 log(){ printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 fail(){ echo "DEPLOY_FAIL $*" >&2; exit 1; }
 
-log "Preflight"
-bash deploy/preflight.sh strict
+# shellcheck disable=SC1091
+source "$(dirname "$0")/layout.sh"
+farmacia_layout_load strict
 
-[[ -d "$APP_DIR/.git" ]] || fail "produção não inicializada; execute deploy/repair-permissions.sh como root uma única vez"
+log "Preflight"
+bash "$(dirname "$0")/preflight.sh" strict
+
+[[ -d "$APP_DIR/.git" ]] || fail "produção não inicializada em $APP_DIR; execute deploy/repair-permissions.sh como root uma única vez"
 [[ -d "$STATE_DIR" ]] || fail "estado privado ausente: $STATE_DIR"
 
 log "Sincronizando produção com main"
@@ -73,4 +73,4 @@ else
   echo "R2_WRITE=pending_private_credentials"
 fi
 
-echo "FARMACIA_DEPLOY_OK commit=$(git rev-parse --short HEAD) domain=${DOMAIN} app=${APP_DIR} state=${STATE_DIR}"
+echo "FARMACIA_DEPLOY_OK commit=$(git rev-parse --short HEAD) domain=${DOMAIN} site_user=${APP_USER} app=${APP_DIR} state=${STATE_DIR}"
