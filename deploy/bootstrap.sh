@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 DOMAIN="farmacia.superamplitude.com"
+APP_USER="superamplitude"
 APP_DIR="/home/superamplitude/htdocs/${DOMAIN}"
 STATE_DIR="/home/superamplitude/.farmacia"
 REPO="https://github.com/superamplitude/Farmacia.git"
@@ -12,7 +13,6 @@ R2_CATALOG_URL="https://catalog.cloudflarestorage.com/${R2_ACCOUNT_ID}/${R2_BUCK
 IMAGE_BASE_URL="https://img.farmacia.superamplitude.com"
 
 mkdir -p "$STATE_DIR/uploads" "$APP_DIR"
-chmod 700 "$STATE_DIR" "$STATE_DIR/uploads" || true
 
 if [ ! -d "$APP_DIR/.git" ]; then
   find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
@@ -28,7 +28,10 @@ cd "$APP_DIR"
 
 if [ ! -f "$STATE_DIR/.env" ]; then
   cp .env.example "$STATE_DIR/.env"
-  chmod 600 "$STATE_DIR/.env"
+  chmod 640 "$STATE_DIR/.env" || true
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -m "u:${APP_USER}:r" "$STATE_DIR/.env" || true
+  fi
 fi
 
 set_env() {
@@ -74,7 +77,7 @@ echo "HEALTH_HTTP=${HTTP_CODE}"
 IMAGE_HTTP="$(curl -L -sS -o /dev/null -w '%{http_code}' "${IMAGE_BASE_URL}/" || true)"
 echo "IMAGE_CDN_HTTP=${IMAGE_HTTP}"
 if [ "$HTTP_CODE" != "200" ]; then
-  echo "AVISO: health-check do portal não retornou HTTP 200. Verifique DNS/vhost/SSL."
+  echo "AVISO: health-check do portal não retornou HTTP 200. Verifique origin/PHP/SSL."
 fi
 if [ "$IMAGE_HTTP" = "000" ]; then
   echo "AVISO: o domínio de imagens ainda não respondeu. Verifique o custom domain do R2 no Cloudflare."
