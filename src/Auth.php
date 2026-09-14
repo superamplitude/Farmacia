@@ -5,30 +5,18 @@ final class Auth
 {
     public static function bootstrapAdmin(PDO $db): void
     {
-        $email = trim((string)env('ADMIN_EMAIL', ''));
-        $password = (string)env('ADMIN_PASSWORD', '');
-        if ($email === '' || $password === '') return;
-        $st = $db->prepare('SELECT id FROM users WHERE email = ?');
-        $st->execute([$email]);
-        if (!$st->fetch()) {
-            $ins = $db->prepare('INSERT INTO users(email,password_hash,role) VALUES(?,?,?)');
-            $ins->execute([$email, password_hash($password, PASSWORD_DEFAULT), 'admin']);
-        }
+        $email=trim((string)env('SUPERADMIN_EMAIL',env('ADMIN_EMAIL',''))); $password=(string)env('SUPERADMIN_PASSWORD',env('ADMIN_PASSWORD',''));
+        if($email===''||$password==='')return;
+        $st=$db->prepare('SELECT id FROM users WHERE email=?');$st->execute([$email]);
+        if(!$st->fetch()){$ins=$db->prepare('INSERT INTO users(email,password_hash,name,role) VALUES(?,?,?,?)');$ins->execute([$email,password_hash($password,PASSWORD_DEFAULT),'Super Admin','super_admin']);}
     }
-
-    public static function login(PDO $db, string $email, string $password): bool
-    {
-        $st = $db->prepare('SELECT * FROM users WHERE email = ? AND active = 1 LIMIT 1');
-        $st->execute([$email]);
-        $u = $st->fetch();
-        if (!$u || !password_verify($password, $u['password_hash'])) return false;
-        session_regenerate_id(true);
-        $_SESSION['admin_id'] = (int)$u['id'];
-        $_SESSION['admin_email'] = $u['email'];
-        return true;
+    public static function login(PDO $db,string $email,string $password):bool{
+        $st=$db->prepare('SELECT * FROM users WHERE email=? AND active=1 LIMIT 1');$st->execute([$email]);$u=$st->fetch(); if(!$u||!password_verify($password,$u['password_hash']))return false;
+        session_regenerate_id(true);$_SESSION['admin_id']=(int)$u['id'];$_SESSION['admin_email']=$u['email'];$_SESSION['role']=$u['role'];$_SESSION['pharmacy_id']=$u['pharmacy_id']!==null?(int)$u['pharmacy_id']:null;$_SESSION['name']=$u['name']?:$u['email'];return true;
     }
-
-    public static function check(): bool { return !empty($_SESSION['admin_id']); }
-    public static function require(): void { if (!self::check()) { header('Location: ' . url('admin.php')); exit; } }
-    public static function logout(): void { $_SESSION = []; session_destroy(); }
+    public static function check():bool{return !empty($_SESSION['admin_id']);}
+    public static function userId():int{return (int)($_SESSION['admin_id']??0);} public static function role():string{return (string)($_SESSION['role']??'');} public static function pharmacyId():?int{return isset($_SESSION['pharmacy_id'])?(int)$_SESSION['pharmacy_id']:null;}
+    public static function can(string ...$roles):bool{return self::check()&&(self::role()==='super_admin'||in_array(self::role(),$roles,true));}
+    public static function require(string ...$roles):void{if(!self::check()||($roles&&!self::can(...$roles))){header('Location: '.url('admin.php'));exit;}}
+    public static function logout():void{$_SESSION=[];session_destroy();}
 }
