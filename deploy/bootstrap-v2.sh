@@ -85,11 +85,24 @@ ensure_env SNCR_CLIENT_SECRET ""
 ensure_env R2_ACCESS_KEY_ID ""
 ensure_env R2_SECRET_ACCESS_KEY ""
 ensure_env IMAGE_DISCOVERY_ENABLED "1"
-ensure_env IMAGE_DISCOVERY_LIMIT "25"
+set_env IMAGE_DISCOVERY_LIMIT "100"
 ensure_env IMAGE_DISCOVERY_DELAY_US "450000"
 ensure_env IMAGE_DISCOVERY_TIMEOUT "18"
 ensure_env IMAGE_DISCOVERY_CANDIDATES "4"
 ensure_env IMAGE_MANIFEST_PATH "$STATE_DIR/image-manifest.json"
+
+# Persist only R2-specific secrets already supplied to this deployment through
+# GitHub Actions. Values are never printed to the logs.
+R2_ENV_ACCESS="${R2_ACCESS_KEY_ID:-${CLOUDFLARE_R2_ACCESS_KEY_ID:-}}"
+R2_ENV_SECRET="${R2_SECRET_ACCESS_KEY:-${CLOUDFLARE_R2_SECRET_ACCESS_KEY:-}}"
+if [[ -n "$R2_ENV_ACCESS" && -n "$R2_ENV_SECRET" ]]; then
+  set_env R2_ACCESS_KEY_ID "$R2_ENV_ACCESS"
+  set_env R2_SECRET_ACCESS_KEY "$R2_ENV_SECRET"
+  echo "R2_SECRET_BRIDGE=configured"
+else
+  echo "R2_SECRET_BRIDGE=not_available"
+fi
+unset R2_ENV_ACCESS R2_ENV_SECRET CLOUDFLARE_R2_ACCESS_KEY_ID CLOUDFLARE_R2_SECRET_ACCESS_KEY
 
 if [[ -z "$(get_env APP_KEY)" ]]; then set_env APP_KEY "$(openssl rand -hex 32)"; fi
 if [[ -z "$(get_env SUPERADMIN_EMAIL)" ]]; then set_env SUPERADMIN_EMAIL "admin@superamplitude.com"; fi
@@ -135,6 +148,7 @@ if [[ -n "$R2_ACCESS" && -n "$R2_SECRET" ]]; then
 else
   echo "R2_WRITE=pending_private_credentials"
 fi
+unset R2_ACCESS R2_SECRET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
 
 if [[ "$(get_env PAYMENT_PROVIDER)" == "mercadopago" && -n "$(get_env MERCADOPAGO_ACCESS_TOKEN)" ]]; then
   echo "PAYMENT_GATEWAY=mercadopago_configured"
