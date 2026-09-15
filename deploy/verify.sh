@@ -25,6 +25,10 @@ cat /tmp/farmacia-self-test.json 2>/dev/null || true
 cat /tmp/farmacia-self-test.err 2>/dev/null || true
 [[ "$SELFTEST" -eq 1 ]] || { echo 'VERIFY_FAIL=self_test'; FAIL=1; }
 
+if [[ -f "$APP_DIR/scripts/r2_env_probe.php" ]]; then
+  php "$APP_DIR/scripts/r2_env_probe.php" 2>/dev/null || true
+fi
+
 PUBLIC_HTTP=000
 ORIGIN_HTTP=000
 ADMIN_ORIGIN_HTTP=000
