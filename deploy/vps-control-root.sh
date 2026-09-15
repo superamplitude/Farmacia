@@ -35,25 +35,54 @@ EOF
   chown root:root "$LAYOUT_FILE"
   chmod 0644 "$LAYOUT_FILE"
 }
+permission_debug(){
+  echo '--- permission debug ---' >&2
+  id "$RUNNER_USER" >&2 || true
+  namei -l "$APP_DIR" >&2 || true
+  ls -ld /home "$APP_HOME" "$APP_HOME/htdocs" "$APP_DIR" "$STATE_DIR" >&2 || true
+  getfacl -cp "$APP_HOME" "$APP_HOME/htdocs" "$APP_DIR" "$STATE_DIR" >&2 || true
+  readlink -f "$APP_DIR" >&2 || true
+}
 fix_permissions(){
   mkdir -p "$APP_DIR" "$STATE_DIR/uploads" "$STATE_DIR/backups"
+
+  # O runner precisa operar o código e o estado privado do site, mas não recebe sudo genérico.
+  # A associação ao grupo do Site User torna a permissão estável mesmo quando ACLs são
+  # recalculadas pelo CloudPanel ou por um deploy posterior.
+  usermod -a -G "$APP_GROUP" "$RUNNER_USER"
+
   chown -R "$APP_USER:$APP_GROUP" "$STATE_DIR"
-  setfacl -m "u:${RUNNER_USER}:--x" "$APP_HOME"
-  setfacl -m "u:${RUNNER_USER}:r-x" "$APP_HOME/htdocs"
+  chown "$APP_USER:$APP_GROUP" "$APP_HOME" "$APP_HOME/htdocs" "$APP_DIR"
+
+  # Travessia nos pais e escrita no document root/estado.
+  chmod g+x "$APP_HOME"
+  chmod g+rx "$APP_HOME/htdocs"
+  chmod g+rwx "$APP_DIR" "$STATE_DIR"
+
+  # ACL explícita e ACL padrão para arquivos novos.
+  setfacl -m "u:${RUNNER_USER}:--x,g:${APP_GROUP}:--x,m::rwx" "$APP_HOME"
+  setfacl -m "u:${RUNNER_USER}:r-x,g:${APP_GROUP}:r-x,m::rwx" "$APP_HOME/htdocs"
+  setfacl -m "u:${RUNNER_USER}:rwx,g:${APP_GROUP}:rwx,m::rwx" "$APP_DIR" "$STATE_DIR"
+  setfacl -m "d:u:${RUNNER_USER}:rwx,d:g:${APP_GROUP}:rwx,d:m::rwx" "$APP_DIR" "$STATE_DIR"
+
   find "$APP_DIR" -type d -exec chown "$APP_USER:$APP_GROUP" {} +
   find "$APP_DIR" -type f -exec chown "$APP_USER:$APP_GROUP" {} +
-  find "$APP_DIR" -type d -exec setfacl -m "u:${RUNNER_USER}:rwx,u:${APP_USER}:rwx,m:rwx" {} +
-  find "$APP_DIR" -type f -exec setfacl -m "u:${RUNNER_USER}:rw-,u:${APP_USER}:rw-,m:rw-" {} +
-  find "$APP_DIR" -type d -exec setfacl -m "d:u:${RUNNER_USER}:rwx,d:u:${APP_USER}:rwx,d:m:rwx" {} +
-  find "$STATE_DIR" -type d -exec setfacl -m "u:${RUNNER_USER}:rwx,u:${APP_USER}:rwx,m:rwx" {} +
-  find "$STATE_DIR" -type f -exec setfacl -m "u:${RUNNER_USER}:rw-,u:${APP_USER}:rw-,m:rw-" {} +
-  find "$STATE_DIR" -type d -exec setfacl -m "d:u:${RUNNER_USER}:rwx,d:u:${APP_USER}:rwx,d:m:rwx" {} +
-  sudo -u "$RUNNER_USER" test -w "$APP_DIR" || fail 'runner cannot write app dir'
-  sudo -u "$RUNNER_USER" test -w "$STATE_DIR" || fail 'runner cannot write state dir'
-  echo "VPS_PERMISSIONS=OK app=${APP_DIR} state=${STATE_DIR}"
+  find "$APP_DIR" -type d -exec setfacl -m "u:${RUNNER_USER}:rwx,g:${APP_GROUP}:rwx,m::rwx,d:u:${RUNNER_USER}:rwx,d:g:${APP_GROUP}:rwx,d:m::rwx" {} +
+  find "$APP_DIR" -type f -exec setfacl -m "u:${RUNNER_USER}:rw-,g:${APP_GROUP}:rw-,m::rw-" {} +
+  find "$STATE_DIR" -type d -exec chown "$APP_USER:$APP_GROUP" {} +
+  find "$STATE_DIR" -type f -exec chown "$APP_USER:$APP_GROUP" {} +
+  find "$STATE_DIR" -type d -exec setfacl -m "u:${RUNNER_USER}:rwx,g:${APP_GROUP}:rwx,m::rwx,d:u:${RUNNER_USER}:rwx,d:g:${APP_GROUP}:rwx,d:m::rwx" {} +
+  find "$STATE_DIR" -type f -exec setfacl -m "u:${RUNNER_USER}:rw-,g:${APP_GROUP}:rw-,m::rw-" {} +
+
+  if ! sudo -u "$RUNNER_USER" test -x "$APP_HOME"; then permission_debug; fail 'runner cannot traverse app home'; fi
+  if ! sudo -u "$RUNNER_USER" test -x "$APP_HOME/htdocs"; then permission_debug; fail 'runner cannot traverse htdocs'; fi
+  if ! sudo -u "$RUNNER_USER" test -w "$APP_DIR"; then permission_debug; fail 'runner cannot write app dir'; fi
+  if ! sudo -u "$RUNNER_USER" test -w "$STATE_DIR"; then permission_debug; fail 'runner cannot write state dir'; fi
+  echo "VPS_PERMISSIONS=OK app=${APP_DIR} state=${STATE_DIR} group=${APP_GROUP}"
 }
 diagnose(){
   echo "VPS_CONTRACT domain=${DOMAIN} site_user=${APP_USER} site_group=${APP_GROUP} app=${APP_DIR} state=${STATE_DIR}"
+  permission_debug
   echo '--- vhost root / upstream ---'
   grep -nE '^[[:space:]]*(root|fastcgi_pass|proxy_pass|server_name)[[:space:]]' "$VHOST" 2>/dev/null || true
   echo '--- nginx config test ---'
@@ -63,7 +92,7 @@ diagnose(){
   systemctl is-active php8.2-fpm 2>/dev/null || true
   systemctl is-active github-actions-farmacia 2>/dev/null || true
   echo '--- php sockets ---'
-  find /run /var/run -maxdepth 3 -type s -iname '*php*' -o -iname '*fpm*sock' 2>/dev/null | sort -u | head -80 || true
+  find /run /var/run -maxdepth 3 \( -type s -iname '*php*' -o -type s -iname '*fpm*sock' \) 2>/dev/null | sort -u | head -80 || true
   echo '--- origin health ---'
   curl -k -sS -D - --resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/?health=1" -o /tmp/farmacia-origin-body || true
   head -c 1000 /tmp/farmacia-origin-body 2>/dev/null || true; echo
