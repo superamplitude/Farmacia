@@ -20,15 +20,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Prepare VPS bridge
+      - name: Prepare VPS bridge best effort
         run: |
           if sudo -n /usr/local/sbin/farmacia-vps-control prepare; then
             echo "VPS_BRIDGE=ready"
           else
-            echo "VPS_BRIDGE=not_installed"
-            echo "Run deploy/install-vps-control.sh once as root on the VPS."
-            exit 1
+            echo "VPS_BRIDGE=helper_reported_failure"
+            echo "Continuing with direct runner access validation because permissions/layout may already have been applied."
           fi
+
+      - name: Validate direct runner access
+        run: |
+          set -Eeuo pipefail
+          test -r /etc/farmacia-superamplitude/layout.env
+          source /etc/farmacia-superamplitude/layout.env
+          test "$APP_USER" = "superamplitude-farmacia"
+          test "$APP_DIR" = "/home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com"
+          test "$STATE_DIR" = "/home/superamplitude-farmacia/.farmacia"
+          cd "$APP_DIR"
+          PROBE="$APP_DIR/.farmrunner-ci-probe-$$"
+          : > "$PROBE"
+          rm -f "$PROBE"
+          cd "$STATE_DIR"
+          PROBE_STATE="$STATE_DIR/.farmrunner-ci-probe-$$"
+          : > "$PROBE_STATE"
+          rm -f "$PROBE_STATE"
+          echo "DIRECT_RUNNER_ACCESS=OK"
 
       - name: Diagnose environment
         run: bash deploy/preflight.sh report
