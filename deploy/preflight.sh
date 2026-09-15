@@ -4,6 +4,7 @@ set -Eeuo pipefail
 MODE="${1:-report}"
 DOMAIN="farmacia.superamplitude.com"
 FAILURES=0
+ROOT_HELPER="/usr/local/sbin/farmacia-vps-control"
 
 ok(){ printf 'PREFLIGHT_OK %s\n' "$*"; }
 warn(){ printf 'PREFLIGHT_WARN %s\n' "$*"; }
@@ -64,12 +65,20 @@ else
   warn 'private_env=missing_will_be_created_on_first_deploy'
 fi
 
-if [[ -n "${VHOST_FILE:-}" && -f "$VHOST_FILE" ]]; then ok "cloudpanel_vhost=${VHOST_FILE}"; else warn 'cloudpanel_vhost=missing'; fi
-
-if command -v sudo >/dev/null 2>&1 && sudo -n -l /usr/local/sbin/farmacia-fix-permissions >/dev/null 2>&1; then
-  ok 'root_permission_helper=available'
+HELPER_ALLOWED=0
+if command -v sudo >/dev/null 2>&1 && sudo -n -l "$ROOT_HELPER" >/dev/null 2>&1; then
+  HELPER_ALLOWED=1
+  ok 'root_vps_control=available'
 else
-  warn 'root_permission_helper=not_available'
+  warn 'root_vps_control=not_available'
+fi
+
+if [[ -n "${VHOST_FILE:-}" && -f "$VHOST_FILE" ]]; then
+  ok "cloudpanel_vhost=${VHOST_FILE}"
+elif [[ "$HELPER_ALLOWED" -eq 1 ]]; then
+  ok 'cloudpanel_vhost=validated_by_root_vps_control'
+else
+  warn 'cloudpanel_vhost=not_visible_to_runner'
 fi
 
 if command -v getfacl >/dev/null 2>&1 && [[ -n "$APP_DIR" ]]; then
