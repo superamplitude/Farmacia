@@ -9,6 +9,11 @@ if ($url === '') {
     fwrite(STDERR, "ANVISA_FAIL URL não configurada\n");
     exit(2);
 }
+$parts = parse_url($url);
+if (!is_array($parts) || strtolower((string)($parts['scheme'] ?? '')) !== 'https' || empty($parts['host'])) {
+    fwrite(STDERR, "ANVISA_FAIL URL deve ser HTTPS válida\n");
+    exit(2);
+}
 
 $maxAgeHours = max(0, (int)env('ANVISA_IMPORT_MAX_AGE_HOURS', '24'));
 if ($maxAgeHours > 0) {
@@ -29,31 +34,67 @@ $seen = 0;
 $written = 0;
 $fh = null;
 
-try {
-    $run = $db->prepare("INSERT INTO import_runs(source,status,message) VALUES('ANVISA','running','download')");
-    $run->execute();
-    $rid = (int)$db->lastInsertId();
+$downloadSecure = static function(string $url, string $tmp): void {
+    $ca = '';
+    foreach (['/etc/ssl/certs/ca-certificates.crt','/etc/pki/tls/certs/ca-bundle.crt','/etc/ssl/cert.pem'] as $candidate) {
+        if (is_file($candidate) && filesize($candidate) > 0) { $ca = $candidate; break; }
+    }
 
     $out = fopen($tmp, 'wb');
     if (!$out) throw new RuntimeException('Falha ao criar arquivo temporário');
-
     $ch = curl_init($url);
-    curl_setopt_array($ch, [
+    $opts = [
         CURLOPT_FILE => $out,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_FAILONERROR => true,
         CURLOPT_CONNECTTIMEOUT => 30,
         CURLOPT_TIMEOUT => 240,
         CURLOPT_USERAGENT => 'Farmacia-SuperAmplitude/1.0',
-    ]);
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ];
+    if ($ca !== '') $opts[CURLOPT_CAINFO] = $ca;
+    curl_setopt_array($ch, $opts);
     $ok = curl_exec($ch);
     $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $err = curl_error($ch);
     curl_close($ch);
     fclose($out);
-    if (!$ok || $http < 200 || $http >= 300) {
-        throw new RuntimeException('Download Anvisa falhou HTTP ' . $http . ($err !== '' ? ': ' . $err : ''));
+
+    if ($ok && $http >= 200 && $http < 300 && is_file($tmp) && filesize($tmp) >= 1024) return;
+
+    @unlink($tmp);
+    $phpError = 'HTTP ' . $http . ($err !== '' ? ': ' . $err : '');
+    $curlBin = '/usr/bin/curl';
+    if (!is_executable($curlBin) || !function_exists('proc_open')) {
+        throw new RuntimeException('Download Anvisa falhou via PHP cURL ' . $phpError);
     }
+
+    $cmd = [$curlBin, '--fail', '--location', '--silent', '--show-error', '--retry', '3', '--retry-delay', '2', '--connect-timeout', '30', '--max-time', '240', '--user-agent', 'Farmacia-SuperAmplitude/1.0'];
+    if ($ca !== '') { $cmd[] = '--cacert'; $cmd[] = $ca; }
+    $cmd[] = '--output'; $cmd[] = $tmp; $cmd[] = $url;
+    $pipes = [];
+    $proc = proc_open($cmd, [0 => ['pipe','r'], 1 => ['pipe','w'], 2 => ['pipe','w']], $pipes);
+    if (!is_resource($proc)) throw new RuntimeException('Falha ao iniciar curl do sistema após erro ' . $phpError);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $code = proc_close($proc);
+    if ($code !== 0 || !is_file($tmp) || filesize($tmp) < 1024) {
+        @unlink($tmp);
+        $cliError = trim((string)$stderr);
+        if ($cliError === '') $cliError = trim((string)$stdout);
+        throw new RuntimeException('Download Anvisa falhou; PHP=' . $phpError . '; CLI=' . ($cliError !== '' ? $cliError : 'exit ' . $code));
+    }
+    echo "ANVISA_DOWNLOAD_FALLBACK=system_curl\n";
+};
+
+try {
+    $run = $db->prepare("INSERT INTO import_runs(source,status,message) VALUES('ANVISA','running','download')");
+    $run->execute();
+    $rid = (int)$db->lastInsertId();
+
+    $downloadSecure($url, $tmp);
     if (!is_file($tmp) || filesize($tmp) < 1024) throw new RuntimeException('CSV Anvisa vazio ou incompleto');
 
     $fh = fopen($tmp, 'rb');
@@ -78,6 +119,11 @@ try {
         }
         return '';
     };
+
+    $requiredHeaders = ['NUMERO_REGISTRO_PRODUTO','NOME_PRODUTO'];
+    foreach ($requiredHeaders as $requiredHeader) {
+        if (!in_array($norm($requiredHeader), $keys, true)) throw new RuntimeException('CSV Anvisa incompatível: coluna ausente ' . $requiredHeader);
+    }
 
     $up = $db->prepare("INSERT INTO medications(registration,product_name,active_ingredient,company,regulatory_category,therapeutic_class,presentation,registration_status,requires_prescription,retain_prescription,controlled,remote_delivery_allowed,review_required,bula_url,source,source_updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'ANVISA',CURRENT_TIMESTAMP) ON CONFLICT(registration) DO UPDATE SET product_name=excluded.product_name,active_ingredient=excluded.active_ingredient,company=excluded.company,regulatory_category=excluded.regulatory_category,therapeutic_class=excluded.therapeutic_class,presentation=excluded.presentation,registration_status=excluded.registration_status,requires_prescription=excluded.requires_prescription,retain_prescription=excluded.retain_prescription,controlled=excluded.controlled,remote_delivery_allowed=excluded.remote_delivery_allowed,review_required=excluded.review_required,bula_url=excluded.bula_url,source_updated_at=CURRENT_TIMESTAMP");
 
