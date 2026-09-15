@@ -8,7 +8,8 @@ RUNNER_USER="farmrunner"
 HELPER="/usr/local/sbin/farmacia-vps-control"
 SUDOERS="/etc/sudoers.d/farmacia-vps-control"
 VHOST="/etc/nginx/sites-enabled/${DOMAIN}.conf"
-SRC="https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/vps-control-root.sh"
+SRC="https://raw.githubusercontent.com/superamplitude/Farmacia/main/deploy/vps-control-root-v2.sh"
+LAYOUT="/etc/farmacia-superamplitude/layout.env"
 
 fail(){ echo "VPS_CONTROL_INSTALL_FAIL $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || fail 'execute como root dentro da VPS'
@@ -39,12 +40,17 @@ visudo -cf "$SUDOERS" >/dev/null
 "$HELPER" repair-php-vhost
 "$HELPER" diagnose
 
+if [[ -f "$APP_DIR/deploy/verify.sh" ]]; then
+  echo '--- production verify ---'
+  FARMACIA_LAYOUT_FILE="$LAYOUT" bash "$APP_DIR/deploy/verify.sh"
+fi
+
 systemctl restart github-actions-farmacia
 sleep 2
 systemctl is-active --quiet github-actions-farmacia || fail 'runner não ficou ativo'
 
 echo '============================================================'
-echo ' FARMACIA VPS CONTROL INSTALADO E VHOST PHP REPARADO'
+echo ' FARMACIA VPS CONTROL INSTALADO E PRODUCAO VERIFICADA'
 echo '============================================================'
 echo "DOMAIN=${DOMAIN}"
 echo "SITE_USER=${APP_USER}"
@@ -54,5 +60,7 @@ echo "HELPER=${HELPER}"
 echo 'RUNNER_SERVICE=active'
 echo 'VPS_CONTROL=READY'
 echo 'VHOST_PHP=READY'
+echo 'VHOST_ROOT_DISPATCH=READY'
 echo 'CA_CERTIFICATES=READY'
+echo 'PRODUCTION_VERIFY=OK'
 echo '============================================================'
