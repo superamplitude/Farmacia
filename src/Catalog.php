@@ -27,25 +27,107 @@ final class Catalog
         return $st->fetchAll();
     }
 
-    public static function publicSearch(PDO $db, int $pharmacyId, string $q, int $limit = 60): array
+    public static function consumerCategories(): array
+    {
+        return [
+            ['slug' => 'genericos', 'name' => 'Genéricos', 'terms' => ['GENÉR', 'GENER']],
+            ['slug' => 'dor-febre', 'name' => 'Dor e Febre', 'terms' => ['ANALG', 'ANTIPIR', 'DIPIRONA', 'PARACETAMOL']],
+            ['slug' => 'gripe-resfriado', 'name' => 'Gripe e Resfriado', 'terms' => ['GRIPE', 'RESFRI', 'ANTIGRIP', 'DESCONGEST']],
+            ['slug' => 'alergias', 'name' => 'Alergias', 'terms' => ['ALERG', 'ANTIHISTAM']],
+            ['slug' => 'pressao-coracao', 'name' => 'Pressão e Coração', 'terms' => ['HIPERT', 'CARDIO', 'LOSART', 'ENALAPR', 'ATENOLOL']],
+            ['slug' => 'diabetes', 'name' => 'Diabetes', 'terms' => ['DIABET', 'METFORM', 'GLICEM']],
+            ['slug' => 'digestivo', 'name' => 'Digestivo', 'terms' => ['GASTR', 'DIGEST', 'ANTACID', 'OMEPRAZ', 'LAXA']],
+            ['slug' => 'inflamacao', 'name' => 'Inflamação e Dor Muscular', 'terms' => ['ANTI-INFLAM', 'ANTIINFLAM', 'DICLOFEN', 'NAPROX', 'MUSCUL']],
+            ['slug' => 'respiratorio', 'name' => 'Respiratório', 'terms' => ['RESPIR', 'BRONC', 'ASMA', 'TOSSE', 'EXPECTOR']],
+            ['slug' => 'dermatologia', 'name' => 'Dermatologia', 'terms' => ['DERMAT', 'CUTAN', 'ACNE', 'TÓPIC', 'TOPIC']],
+            ['slug' => 'saude-mulher', 'name' => 'Saúde da Mulher', 'terms' => ['CONTRACEP', 'GINECO', 'VAGIN', 'HORMON']],
+            ['slug' => 'vitaminas', 'name' => 'Vitaminas e Minerais', 'terms' => ['VITAM', 'MINERAL', 'SUPLEMENT']],
+        ];
+    }
+
+    private static function categoryDefinition(string $slug): ?array
+    {
+        foreach (self::consumerCategories() as $category) {
+            if ($category['slug'] === $slug) return $category;
+        }
+        return null;
+    }
+
+    private static function categorySql(array $terms, array &$args, string $alias = 'm'): string
+    {
+        $fields = [
+            "$alias.product_name",
+            "$alias.active_ingredient",
+            "$alias.company",
+            "$alias.regulatory_category",
+            "$alias.therapeutic_class",
+            "$alias.presentation",
+        ];
+        $groups = [];
+        foreach ($terms as $term) {
+            $or = [];
+            foreach ($fields as $field) {
+                $or[] = "COALESCE($field,'') LIKE ?";
+                $args[] = '%' . $term . '%';
+            }
+            $groups[] = '(' . implode(' OR ', $or) . ')';
+        }
+        return $groups ? '(' . implode(' OR ', $groups) . ')' : '1=1';
+    }
+
+    public static function publicSearch(PDO $db, int $pharmacyId, string $q, int $limit = 60, string $categorySlug = ''): array
     {
         $q = trim($q);
+        $categorySlug = trim($categorySlug);
         $limit = max(1, min(200, $limit));
         $args = [$pharmacyId];
         $sql = 'SELECT m.*, pp.price store_price, COALESCE(pp.stock,0) store_stock, COALESCE(pp.active,0) store_active, pp.image_url store_image_url
                 FROM medications m
                 LEFT JOIN pharmacy_products pp ON pp.medication_id=m.id AND pp.pharmacy_id=?';
+        $where = [];
 
         if ($q !== '') {
             $like = '%' . $q . '%';
-            $sql .= ' WHERE (m.product_name LIKE ? OR m.active_ingredient LIKE ? OR m.company LIKE ? OR m.registration LIKE ? OR m.regulatory_category LIKE ? OR m.therapeutic_class LIKE ?)';
+            $where[] = '(m.product_name LIKE ? OR m.active_ingredient LIKE ? OR m.company LIKE ? OR m.registration LIKE ? OR m.regulatory_category LIKE ? OR m.therapeutic_class LIKE ?)';
             array_push($args, $like, $like, $like, $like, $like, $like);
         }
 
+        $category = self::categoryDefinition($categorySlug);
+        if ($category) {
+            $where[] = self::categorySql($category['terms'], $args, 'm');
+        }
+
+        if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
         $sql .= ' ORDER BY COALESCE(pp.active,0) DESC, CASE WHEN m.image_url IS NOT NULL AND m.image_url<>\'\' THEN 0 ELSE 1 END, m.product_name LIMIT ' . $limit;
         $st = $db->prepare($sql);
         $st->execute($args);
         return $st->fetchAll();
+    }
+
+    public static function consumerCategoryCounts(PDO $db): array
+    {
+        $out = [];
+        foreach (self::consumerCategories() as $category) {
+            $args = [];
+            $where = self::categorySql($category['terms'], $args, 'm');
+            $st = $db->prepare('SELECT COUNT(*) FROM medications m WHERE ' . $where);
+            $st->execute($args);
+            $count = (int)$st->fetchColumn();
+            if ($count > 0) {
+                $out[] = [
+                    'slug' => $category['slug'],
+                    'name' => $category['name'],
+                    'total' => $count,
+                ];
+            }
+        }
+        return $out;
+    }
+
+    public static function categoryLabel(string $slug): string
+    {
+        $category = self::categoryDefinition(trim($slug));
+        return $category ? (string)$category['name'] : '';
     }
 
     public static function categories(PDO $db, int $limit = 24): array
