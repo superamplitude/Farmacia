@@ -35,6 +35,8 @@ for _ in $(seq 1 12); do
   sleep 5
 done
 ADMIN_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/admin.php" /tmp/farmacia-origin-admin.out)"
+WEBHOOK_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/api/payment_webhook.php?provider=mercadopago" /tmp/farmacia-origin-webhook.out)"
+TRACKING_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/pedido.php?t=invalid" /tmp/farmacia-origin-tracking.out)"
 IMAGE_HTTP="$(code "${IMAGE_URL}/" /tmp/farmacia-image-root.out)"
 
 echo "VERIFY_SITE_USER=${APP_USER}"
@@ -43,6 +45,8 @@ echo "VERIFY_STATE_DIR=${STATE_DIR}"
 echo "VERIFY_ORIGIN_HTTP=${ORIGIN_HTTP}"
 echo "VERIFY_PUBLIC_HTTP=${PUBLIC_HTTP}"
 echo "VERIFY_ADMIN_ORIGIN_HTTP=${ADMIN_ORIGIN_HTTP}"
+echo "VERIFY_PAYMENT_WEBHOOK_ORIGIN_HTTP=${WEBHOOK_ORIGIN_HTTP}"
+echo "VERIFY_ORDER_TRACKING_INVALID_HTTP=${TRACKING_ORIGIN_HTTP}"
 echo "VERIFY_IMAGE_HTTP=${IMAGE_HTTP}"
 echo "VERIFY_NGINX=$(systemctl is-active nginx 2>/dev/null || true)"
 echo "VERIFY_RUNNER=$(systemctl is-active github-actions-farmacia 2>/dev/null || true)"
@@ -66,6 +70,8 @@ if [[ "$PUBLIC_HTTP" != 200 ]]; then
   FAIL=1
 fi
 if [[ "$ADMIN_ORIGIN_HTTP" != 200 ]]; then echo 'VERIFY_FAIL=admin_origin'; FAIL=1; fi
+if [[ "$WEBHOOK_ORIGIN_HTTP" != 200 ]]; then echo 'VERIFY_FAIL=payment_webhook_origin'; FAIL=1; fi
+if [[ "$TRACKING_ORIGIN_HTTP" != 404 ]]; then echo 'VERIFY_FAIL=tracking_invalid_token_contract'; FAIL=1; fi
 if [[ "$IMAGE_HTTP" == 000 ]]; then echo 'VERIFY_FAIL=image_domain_unreachable'; FAIL=1; fi
 
 if [[ "$FAIL" -eq 0 ]]; then echo 'VERIFY_STATUS=OK'; exit 0; fi
