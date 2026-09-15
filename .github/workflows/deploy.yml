@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: farmacia-production
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -26,6 +26,11 @@ jobs:
             echo "VPS_BRIDGE=ready"
           else
             echo "VPS_BRIDGE=helper_reported_failure"
+          fi
+          if sudo -n /usr/local/sbin/farmacia-vps-control repair-php-vhost; then
+            echo "VPS_VHOST=php-fpm"
+          else
+            echo "VPS_VHOST=repair_not_available_yet"
           fi
 
       - name: Establish canonical runner layout
@@ -58,13 +63,6 @@ jobs:
           : > "$PROBE_STATE"
           rm -f "$PROBE_STATE"
           echo "DIRECT_RUNNER_ACCESS=OK"
-
-      - name: Inspect active vhost
-        run: |
-          set -Eeuo pipefail
-          VHOST=/etc/nginx/sites-enabled/farmacia.superamplitude.com.conf
-          ls -l "$VHOST" || true
-          grep -nE '^[[:space:]]*(server_name|root|index|location|try_files|fastcgi_pass|proxy_pass|include)[[:space:]]' "$VHOST" || true
 
       - name: Diagnose environment
         run: bash deploy/preflight.sh report
