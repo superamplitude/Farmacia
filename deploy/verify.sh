@@ -37,7 +37,13 @@ done
 ADMIN_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/admin.php" /tmp/farmacia-origin-admin.out)"
 WEBHOOK_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/api/payment_webhook.php?provider=mercadopago" /tmp/farmacia-origin-webhook.out)"
 TRACKING_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/pedido.php?t=invalid" /tmp/farmacia-origin-tracking.out)"
+CATALOG_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/" /tmp/farmacia-origin-catalog.out)"
+CATEGORIES_ORIGIN_HTTP="$(origin_code "${PUBLIC_URL}/api/categories.php" /tmp/farmacia-origin-categories.out)"
 IMAGE_HTTP="$(code "${IMAGE_URL}/" /tmp/farmacia-image-root.out)"
+
+PRODUCT_CARD_COUNT="$(grep -o '<article class="card">' /tmp/farmacia-origin-catalog.out 2>/dev/null | wc -l | tr -d ' ' || true)"
+CATEGORY_COUNT="$(php -r '$j=json_decode(file_get_contents("/tmp/farmacia-origin-categories.out"),true); echo is_array($j["categories"]??null)?count($j["categories"]):0;' 2>/dev/null || echo 0)"
+CATALOG_TOTAL="$(php -r '$j=json_decode(file_get_contents("/tmp/farmacia-origin-categories.out"),true); echo (int)($j["total"]??0);' 2>/dev/null || echo 0)"
 
 echo "VERIFY_SITE_USER=${APP_USER}"
 echo "VERIFY_APP_DIR=${APP_DIR}"
@@ -47,6 +53,11 @@ echo "VERIFY_PUBLIC_HTTP=${PUBLIC_HTTP}"
 echo "VERIFY_ADMIN_ORIGIN_HTTP=${ADMIN_ORIGIN_HTTP}"
 echo "VERIFY_PAYMENT_WEBHOOK_ORIGIN_HTTP=${WEBHOOK_ORIGIN_HTTP}"
 echo "VERIFY_ORDER_TRACKING_INVALID_HTTP=${TRACKING_ORIGIN_HTTP}"
+echo "VERIFY_CATALOG_ORIGIN_HTTP=${CATALOG_ORIGIN_HTTP}"
+echo "VERIFY_CATEGORIES_ORIGIN_HTTP=${CATEGORIES_ORIGIN_HTTP}"
+echo "VERIFY_PRODUCT_CARD_COUNT=${PRODUCT_CARD_COUNT:-0}"
+echo "VERIFY_CATEGORY_COUNT=${CATEGORY_COUNT:-0}"
+echo "VERIFY_CATALOG_TOTAL=${CATALOG_TOTAL:-0}"
 echo "VERIFY_IMAGE_HTTP=${IMAGE_HTTP}"
 echo "VERIFY_NGINX=$(systemctl is-active nginx 2>/dev/null || true)"
 echo "VERIFY_RUNNER=$(systemctl is-active github-actions-farmacia 2>/dev/null || true)"
@@ -72,6 +83,11 @@ fi
 if [[ "$ADMIN_ORIGIN_HTTP" != 200 ]]; then echo 'VERIFY_FAIL=admin_origin'; FAIL=1; fi
 if [[ "$WEBHOOK_ORIGIN_HTTP" != 200 ]]; then echo 'VERIFY_FAIL=payment_webhook_origin'; FAIL=1; fi
 if [[ "$TRACKING_ORIGIN_HTTP" != 404 ]]; then echo 'VERIFY_FAIL=tracking_invalid_token_contract'; FAIL=1; fi
+if [[ "$CATALOG_ORIGIN_HTTP" != 200 ]]; then echo 'VERIFY_FAIL=catalog_origin'; FAIL=1; fi
+if [[ "$CATEGORIES_ORIGIN_HTTP" != 200 ]]; then echo 'VERIFY_FAIL=categories_origin'; FAIL=1; fi
+if [[ "${PRODUCT_CARD_COUNT:-0}" -lt 1 ]]; then echo 'VERIFY_FAIL=products_not_rendered'; FAIL=1; fi
+if [[ "${CATEGORY_COUNT:-0}" -lt 1 ]]; then echo 'VERIFY_FAIL=categories_empty'; FAIL=1; fi
+if [[ "${CATALOG_TOTAL:-0}" -lt 1 ]]; then echo 'VERIFY_FAIL=catalog_total_empty'; FAIL=1; fi
 if [[ "$IMAGE_HTTP" == 000 ]]; then echo 'VERIFY_FAIL=image_domain_unreachable'; FAIL=1; fi
 
 if [[ "$FAIL" -eq 0 ]]; then echo 'VERIFY_STATUS=OK'; exit 0; fi
