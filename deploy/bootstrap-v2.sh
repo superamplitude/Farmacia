@@ -3,6 +3,7 @@ set -Eeuo pipefail
 umask 0007
 
 DOMAIN="farmacia.superamplitude.com"
+REPO="https://github.com/superamplitude/Farmacia.git"
 R2_ACCOUNT_ID="a26bcc0f570221207e6e66981adae363"
 R2_BUCKET="superamplitude"
 R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -19,8 +20,21 @@ farmacia_layout_load strict
 log "Preflight"
 bash "$(dirname "$0")/preflight.sh" strict
 
-[[ -d "$APP_DIR/.git" ]] || fail "produção não inicializada em $APP_DIR; execute deploy/repair-permissions.sh como root uma única vez"
-[[ -d "$STATE_DIR" ]] || fail "estado privado ausente: $STATE_DIR"
+[[ "$APP_USER" == "superamplitude-farmacia" ]] || fail "site user inesperado: $APP_USER"
+[[ "$APP_DIR" == "/home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com" ]] || fail "app dir inesperado: $APP_DIR"
+[[ "$STATE_DIR" == "/home/superamplitude-farmacia/.farmacia" ]] || fail "state dir inesperado: $STATE_DIR"
+mkdir -p "$STATE_DIR/backups" "$STATE_DIR/uploads"
+
+if [[ ! -d "$APP_DIR/.git" ]]; then
+  log "Inicializando árvore Git de produção"
+  TS="$(date +%Y%m%d-%H%M%S)"
+  if find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    tar -czf "$STATE_DIR/backups/pre-git-init-${TS}.tar.gz" -C "$APP_DIR" .
+    echo "PRE_GIT_BACKUP=$STATE_DIR/backups/pre-git-init-${TS}.tar.gz"
+  fi
+  find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  git clone "$REPO" "$APP_DIR"
+fi
 
 log "Sincronizando produção com main"
 git -C "$APP_DIR" fetch origin main
@@ -31,13 +45,13 @@ cd "$APP_DIR"
 log "Preparando configuração privada"
 if [[ ! -f "$STATE_DIR/.env" ]]; then cp .env.example "$STATE_DIR/.env"; fi
 chmod 640 "$STATE_DIR/.env" || true
-if command -v setfacl >/dev/null 2>&1; then setfacl -m "u:${APP_USER}:rw-,m:rw" "$STATE_DIR/.env" || true; fi
-[[ -r "$STATE_DIR/.env" ]] || fail "runner não consegue ler o .env privado"
+[[ -r "$STATE_DIR/.env" && -w "$STATE_DIR/.env" ]] || fail "runner não consegue ler/escrever o .env privado"
 
 set_env() {
   local key="$1" value="$2" file="$STATE_DIR/.env"
   if grep -q "^${key}=" "$file"; then sed -i "s#^${key}=.*#${key}=${value}#" "$file"; else printf '%s=%s\n' "$key" "$value" >> "$file"; fi
 }
+get_env(){ grep "^${1}=" "$STATE_DIR/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true; }
 
 set_env APP_BASE "/"
 set_env APP_URL "https://${DOMAIN}"
@@ -48,6 +62,21 @@ set_env R2_ACCOUNT_ID "$R2_ACCOUNT_ID"
 set_env R2_BUCKET "$R2_BUCKET"
 set_env R2_ENDPOINT "$R2_ENDPOINT"
 set_env R2_CATALOG_URL "$R2_CATALOG_URL"
+
+if [[ -z "$(get_env APP_KEY)" ]]; then set_env APP_KEY "$(openssl rand -hex 32)"; fi
+if [[ -z "$(get_env SUPERADMIN_EMAIL)" ]]; then set_env SUPERADMIN_EMAIL "admin@superamplitude.com"; fi
+if [[ -z "$(get_env SUPERADMIN_PASSWORD)" ]]; then
+  ADMIN_PASSWORD="F4rmA!$(openssl rand -hex 16)"
+  set_env SUPERADMIN_PASSWORD "$ADMIN_PASSWORD"
+  {
+    printf 'SUPERADMIN_EMAIL=%q\n' "$(get_env SUPERADMIN_EMAIL)"
+    printf 'SUPERADMIN_PASSWORD=%q\n' "$ADMIN_PASSWORD"
+    printf 'CREATED_AT=%q\n' "$(date -Is)"
+  } > "$STATE_DIR/superadmin.credentials"
+  chmod 600 "$STATE_DIR/superadmin.credentials"
+  unset ADMIN_PASSWORD
+  echo "SUPERADMIN_CREDENTIALS=$STATE_DIR/superadmin.credentials"
+fi
 
 log "Validando runtime PHP"
 php -r '$need=["pdo","pdo_sqlite","curl","mbstring","fileinfo"];foreach($need as $e){if(!extension_loaded($e)){fwrite(STDERR,"PHP_EXT_MISSING=$e\n");exit(1);}}echo "PHP_EXTENSIONS_OK\n";'
