@@ -41,27 +41,26 @@ permission_debug(){
   namei -l "$APP_DIR" >&2 || true
   ls -ld /home "$APP_HOME" "$APP_HOME/htdocs" "$APP_DIR" "$STATE_DIR" >&2 || true
   getfacl -cp "$APP_HOME" "$APP_HOME/htdocs" "$APP_DIR" "$STATE_DIR" >&2 || true
-  readlink -f "$APP_DIR" >&2 || true
+  sudo -u "$RUNNER_USER" bash -lc 'id; pwd; cd "$1" && pwd && ls -ld . ' _ "$APP_DIR" >&2 || true
+}
+probe_runner_write(){
+  local target="$1" marker
+  marker="${target}/.farmrunner-write-probe-$$"
+  sudo -u "$RUNNER_USER" env HOME="/home/${RUNNER_USER}" bash -c 'set -e; cd "$1"; : > "$2"; rm -f "$2"' _ "$target" "$marker"
 }
 fix_permissions(){
   mkdir -p "$APP_DIR" "$STATE_DIR/uploads" "$STATE_DIR/backups"
 
-  # O runner precisa operar o código e o estado privado do site, mas não recebe sudo genérico.
-  # A associação ao grupo do Site User torna a permissão estável mesmo quando ACLs são
-  # recalculadas pelo CloudPanel ou por um deploy posterior.
   usermod -a -G "$APP_GROUP" "$RUNNER_USER"
 
   chown -R "$APP_USER:$APP_GROUP" "$STATE_DIR"
   chown "$APP_USER:$APP_GROUP" "$APP_HOME" "$APP_HOME/htdocs" "$APP_DIR"
 
-  # Travessia nos pais e escrita no document root/estado.
-  chmod g+x "$APP_HOME"
-  chmod g+rx "$APP_HOME/htdocs"
+  chmod g+rx "$APP_HOME" "$APP_HOME/htdocs"
   chmod g+rwx "$APP_DIR" "$STATE_DIR"
 
-  # ACL explícita e ACL padrão para arquivos novos.
-  setfacl -m "u:${RUNNER_USER}:--x,g:${APP_GROUP}:--x,m::rwx" "$APP_HOME"
-  setfacl -m "u:${RUNNER_USER}:r-x,g:${APP_GROUP}:r-x,m::rwx" "$APP_HOME/htdocs"
+  # O runner recebe leitura/travessia nos pais e rwx apenas no document root/estado.
+  setfacl -m "u:${RUNNER_USER}:r-x,g:${APP_GROUP}:r-x,m::rwx" "$APP_HOME" "$APP_HOME/htdocs"
   setfacl -m "u:${RUNNER_USER}:rwx,g:${APP_GROUP}:rwx,m::rwx" "$APP_DIR" "$STATE_DIR"
   setfacl -m "d:u:${RUNNER_USER}:rwx,d:g:${APP_GROUP}:rwx,d:m::rwx" "$APP_DIR" "$STATE_DIR"
 
@@ -74,10 +73,8 @@ fix_permissions(){
   find "$STATE_DIR" -type d -exec setfacl -m "u:${RUNNER_USER}:rwx,g:${APP_GROUP}:rwx,m::rwx,d:u:${RUNNER_USER}:rwx,d:g:${APP_GROUP}:rwx,d:m::rwx" {} +
   find "$STATE_DIR" -type f -exec setfacl -m "u:${RUNNER_USER}:rw-,g:${APP_GROUP}:rw-,m::rw-" {} +
 
-  if ! sudo -u "$RUNNER_USER" test -x "$APP_HOME"; then permission_debug; fail 'runner cannot traverse app home'; fi
-  if ! sudo -u "$RUNNER_USER" test -x "$APP_HOME/htdocs"; then permission_debug; fail 'runner cannot traverse htdocs'; fi
-  if ! sudo -u "$RUNNER_USER" test -w "$APP_DIR"; then permission_debug; fail 'runner cannot write app dir'; fi
-  if ! sudo -u "$RUNNER_USER" test -w "$STATE_DIR"; then permission_debug; fail 'runner cannot write state dir'; fi
+  if ! probe_runner_write "$APP_DIR"; then permission_debug; fail 'runner cannot write app dir'; fi
+  if ! probe_runner_write "$STATE_DIR"; then permission_debug; fail 'runner cannot write state dir'; fi
   echo "VPS_PERMISSIONS=OK app=${APP_DIR} state=${STATE_DIR} group=${APP_GROUP}"
 }
 diagnose(){
