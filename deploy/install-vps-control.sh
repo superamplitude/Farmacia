@@ -20,7 +20,8 @@ ROOT_PATH="$(awk '$1=="root" {gsub(/;/,"",$2); print $2; exit}' "$VHOST" 2>/dev/
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y >/dev/null
-apt-get install -y acl sudo curl python3 iproute2 php8.2-fpm >/dev/null
+apt-get install -y acl sudo curl python3 iproute2 php8.2-fpm ca-certificates openssl >/dev/null
+update-ca-certificates >/dev/null 2>&1 || true
 
 curl -fsSL "$SRC" -o "${HELPER}.new"
 bash -n "${HELPER}.new"
@@ -33,6 +34,7 @@ chown root:root "$SUDOERS"
 chmod 0440 "$SUDOERS"
 visudo -cf "$SUDOERS" >/dev/null
 
+"$HELPER" refresh-ca
 "$HELPER" prepare
 "$HELPER" repair-php-vhost
 "$HELPER" diagnose
@@ -52,4 +54,5 @@ echo "HELPER=${HELPER}"
 echo 'RUNNER_SERVICE=active'
 echo 'VPS_CONTROL=READY'
 echo 'VHOST_PHP=READY'
+echo 'CA_CERTIFICATES=READY'
 echo '============================================================'
