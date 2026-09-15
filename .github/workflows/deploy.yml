@@ -26,17 +26,29 @@ jobs:
             echo "VPS_BRIDGE=ready"
           else
             echo "VPS_BRIDGE=helper_reported_failure"
-            echo "Continuing with direct runner access validation because permissions/layout may already have been applied."
           fi
+
+      - name: Establish canonical runner layout
+        run: |
+          set -Eeuo pipefail
+          LAYOUT="$RUNNER_TEMP/farmacia-layout.env"
+          cat > "$LAYOUT" <<'EOF'
+          APP_USER=superamplitude-farmacia
+          APP_HOME=/home/superamplitude-farmacia
+          APP_DIR=/home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com
+          STATE_DIR=/home/superamplitude-farmacia/.farmacia
+          VHOST_FILE=/etc/nginx/sites-enabled/farmacia.superamplitude.com.conf
+          EOF
+          chmod 600 "$LAYOUT"
+          echo "FARMACIA_LAYOUT_FILE=$LAYOUT" >> "$GITHUB_ENV"
+          echo "RUNNER_LAYOUT=$LAYOUT"
 
       - name: Validate direct runner access
         run: |
           set -Eeuo pipefail
-          test -r /etc/farmacia-superamplitude/layout.env
-          source /etc/farmacia-superamplitude/layout.env
-          test "$APP_USER" = "superamplitude-farmacia"
-          test "$APP_DIR" = "/home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com"
-          test "$STATE_DIR" = "/home/superamplitude-farmacia/.farmacia"
+          APP_DIR=/home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com
+          STATE_DIR=/home/superamplitude-farmacia/.farmacia
+          id
           cd "$APP_DIR"
           PROBE="$APP_DIR/.farmrunner-ci-probe-$$"
           : > "$PROBE"
@@ -46,6 +58,13 @@ jobs:
           : > "$PROBE_STATE"
           rm -f "$PROBE_STATE"
           echo "DIRECT_RUNNER_ACCESS=OK"
+
+      - name: Inspect active vhost
+        run: |
+          set -Eeuo pipefail
+          VHOST=/etc/nginx/sites-enabled/farmacia.superamplitude.com.conf
+          ls -l "$VHOST" || true
+          grep -nE '^[[:space:]]*(server_name|root|index|location|try_files|fastcgi_pass|proxy_pass|include)[[:space:]]' "$VHOST" || true
 
       - name: Diagnose environment
         run: bash deploy/preflight.sh report
