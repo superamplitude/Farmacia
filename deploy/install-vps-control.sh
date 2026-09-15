@@ -20,9 +20,10 @@ ROOT_PATH="$(awk '$1=="root" {gsub(/;/,"",$2); print $2; exit}' "$VHOST" 2>/dev/
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y >/dev/null
-apt-get install -y acl sudo curl >/dev/null
+apt-get install -y acl sudo curl python3 iproute2 php8.2-fpm >/dev/null
 
 curl -fsSL "$SRC" -o "${HELPER}.new"
+bash -n "${HELPER}.new"
 chown root:root "${HELPER}.new"
 chmod 0755 "${HELPER}.new"
 mv "${HELPER}.new" "$HELPER"
@@ -33,6 +34,7 @@ chmod 0440 "$SUDOERS"
 visudo -cf "$SUDOERS" >/dev/null
 
 "$HELPER" prepare
+"$HELPER" repair-php-vhost
 "$HELPER" diagnose
 
 systemctl restart github-actions-farmacia
@@ -40,7 +42,7 @@ sleep 2
 systemctl is-active --quiet github-actions-farmacia || fail 'runner não ficou ativo'
 
 echo '============================================================'
-echo ' FARMACIA VPS CONTROL INSTALADO'
+echo ' FARMACIA VPS CONTROL INSTALADO E VHOST PHP REPARADO'
 echo '============================================================'
 echo "DOMAIN=${DOMAIN}"
 echo "SITE_USER=${APP_USER}"
@@ -49,4 +51,5 @@ echo "RUNNER_USER=${RUNNER_USER}"
 echo "HELPER=${HELPER}"
 echo 'RUNNER_SERVICE=active'
 echo 'VPS_CONTROL=READY'
+echo 'VHOST_PHP=READY'
 echo '============================================================'
