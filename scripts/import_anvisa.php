@@ -14,6 +14,11 @@ if (!is_array($parts) || strtolower((string)($parts['scheme'] ?? '')) !== 'https
     fwrite(STDERR, "ANVISA_FAIL URL deve ser HTTPS válida\n");
     exit(2);
 }
+$sourceHost = strtolower((string)$parts['host']);
+if ($sourceHost !== 'dados.anvisa.gov.br') {
+    fwrite(STDERR, "ANVISA_FAIL host de origem não autorizado\n");
+    exit(2);
+}
 
 $maxAgeHours = max(0, (int)env('ANVISA_IMPORT_MAX_AGE_HOURS', '24'));
 if ($maxAgeHours > 0) {
@@ -34,18 +39,134 @@ $seen = 0;
 $written = 0;
 $fh = null;
 
-$downloadSecure = static function(string $url, string $tmp): void {
-    $ca = '';
+$systemCa = static function(): string {
     foreach (['/etc/ssl/certs/ca-certificates.crt','/etc/pki/tls/certs/ca-bundle.crt','/etc/ssl/cert.pem'] as $candidate) {
-        if (is_file($candidate) && filesize($candidate) > 0) { $ca = $candidate; break; }
+        if (is_file($candidate) && filesize($candidate) > 0) return $candidate;
     }
+    return '';
+};
 
+$normalizeCertificate = static function(string $raw): string {
+    if (str_contains($raw, '-----BEGIN CERTIFICATE-----')) {
+        if (preg_match('/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/s', $raw, $m)) return $m[0] . "\n";
+    }
+    if (!function_exists('proc_open') || !is_executable('/usr/bin/openssl')) {
+        throw new RuntimeException('OpenSSL indisponível para converter certificado intermediário');
+    }
+    $pipes = [];
+    $proc = proc_open(['/usr/bin/openssl','x509','-inform','DER','-outform','PEM'], [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']], $pipes);
+    if (!is_resource($proc)) throw new RuntimeException('Falha ao iniciar OpenSSL para certificado intermediário');
+    fwrite($pipes[0], $raw); fclose($pipes[0]);
+    $pem = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $err = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $code = proc_close($proc);
+    if ($code !== 0 || !str_contains((string)$pem, '-----BEGIN CERTIFICATE-----')) {
+        throw new RuntimeException('Certificado intermediário inválido: ' . trim((string)$err));
+    }
+    return (string)$pem;
+};
+
+$issuerAiaUrl = static function(string $pem): string {
+    $cert = @openssl_x509_read($pem);
+    if ($cert === false) return '';
+    $parsed = @openssl_x509_parse($cert);
+    if (!is_array($parsed)) return '';
+    $aia = (string)($parsed['extensions']['authorityInfoAccess'] ?? '');
+    if (!preg_match('/CA Issuers\s*-\s*URI:([^\s,]+)/i', $aia, $m)) return '';
+    $candidate = trim($m[1]);
+    $p = parse_url($candidate);
+    if (!is_array($p) || !in_array(strtolower((string)($p['scheme'] ?? '')), ['http','https'], true)) return '';
+    $host = strtolower((string)($p['host'] ?? ''));
+    if ($host === '' || filter_var($host, FILTER_VALIDATE_IP)) return '';
+    $allowed = ['sectigo.com','comodoca.com','usertrust.com'];
+    $ok = false;
+    foreach ($allowed as $suffix) {
+        if ($host === $suffix || str_ends_with($host, '.' . $suffix)) { $ok = true; break; }
+    }
+    return $ok ? $candidate : '';
+};
+
+$fetchCertificateObject = static function(string $url, string $ca): string {
+    $ch = curl_init($url);
+    $opts = [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 3,
+        CURLOPT_FAILONERROR => true,
+        CURLOPT_CONNECTTIMEOUT => 20,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_USERAGENT => 'Farmacia-SuperAmplitude/1.0 certificate-chain-repair',
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ];
+    if ($ca !== '') $opts[CURLOPT_CAINFO] = $ca;
+    curl_setopt_array($ch, $opts);
+    $body = curl_exec($ch);
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
+    curl_close($ch);
+    if (!is_string($body) || $body === '' || $http < 200 || $http >= 300) {
+        throw new RuntimeException('Falha ao obter CA intermediária HTTP ' . $http . ($err !== '' ? ': ' . $err : ''));
+    }
+    return $body;
+};
+
+$buildAiaBundle = static function(string $host, string $ca) use ($issuerAiaUrl, $fetchCertificateObject, $normalizeCertificate): string {
+    if ($host !== 'dados.anvisa.gov.br' || $ca === '') return '';
+
+    $ctx = stream_context_create(['ssl' => [
+        'capture_peer_cert' => true,
+        'capture_peer_cert_chain' => true,
+        'verify_peer' => false,
+        'verify_peer_name' => false,
+        'SNI_enabled' => true,
+        'peer_name' => $host,
+    ]]);
+    $errno = 0; $errstr = '';
+    $sock = @stream_socket_client('ssl://' . $host . ':443', $errno, $errstr, 20, STREAM_CLIENT_CONNECT, $ctx);
+    if (!is_resource($sock)) throw new RuntimeException('Falha ao capturar certificado Anvisa: ' . $errstr);
+    fclose($sock);
+    $opts = stream_context_get_options($ctx);
+    $leaf = $opts['ssl']['peer_certificate'] ?? null;
+    if ($leaf === null) throw new RuntimeException('Servidor Anvisa não forneceu certificado TLS');
+    $leafPem = '';
+    if (!@openssl_x509_export($leaf, $leafPem) || $leafPem === '') throw new RuntimeException('Falha ao exportar certificado TLS da Anvisa');
+
+    $chain = [];
+    $seen = [];
+    $current = $leafPem;
+    for ($depth = 0; $depth < 4; $depth++) {
+        $issuerUrl = $issuerAiaUrl($current);
+        if ($issuerUrl === '') break;
+        $raw = $fetchCertificateObject($issuerUrl, $ca);
+        $pem = $normalizeCertificate($raw);
+        $cert = @openssl_x509_read($pem);
+        $fingerprint = $cert !== false && function_exists('openssl_x509_fingerprint') ? (string)openssl_x509_fingerprint($cert, 'sha256') : hash('sha256', $pem);
+        if ($fingerprint === '' || isset($seen[$fingerprint])) break;
+        $seen[$fingerprint] = true;
+        $chain[] = $pem;
+        $current = $pem;
+    }
+    if (!$chain) throw new RuntimeException('CA intermediária da Anvisa não pôde ser descoberta por AIA');
+
+    $bundle = tempnam(sys_get_temp_dir(), 'anvisa_ca_');
+    if ($bundle === false) throw new RuntimeException('Falha ao criar bundle CA temporário');
+    $base = file_get_contents($ca);
+    if (!is_string($base) || $base === '') { @unlink($bundle); throw new RuntimeException('Bundle CA do sistema inválido'); }
+    file_put_contents($bundle, rtrim($base) . "\n" . implode("\n", $chain));
+    chmod($bundle, 0600);
+    echo 'ANVISA_TLS_CHAIN_RECOVERY=AIA_INTERMEDIATE depth=' . count($chain) . "\n";
+    return $bundle;
+};
+
+$curlDownload = static function(string $url, string $tmp, string $ca): array {
     $out = fopen($tmp, 'wb');
     if (!$out) throw new RuntimeException('Falha ao criar arquivo temporário');
     $ch = curl_init($url);
     $opts = [
         CURLOPT_FILE => $out,
         CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 5,
         CURLOPT_FAILONERROR => true,
         CURLOPT_CONNECTTIMEOUT => 30,
         CURLOPT_TIMEOUT => 240,
@@ -60,33 +181,32 @@ $downloadSecure = static function(string $url, string $tmp): void {
     $err = curl_error($ch);
     curl_close($ch);
     fclose($out);
+    return [$ok === true, $http, $err];
+};
 
+$downloadSecure = static function(string $url, string $tmp, string $host) use ($systemCa, $buildAiaBundle, $curlDownload): void {
+    $ca = $systemCa();
+    [$ok, $http, $err] = $curlDownload($url, $tmp, $ca);
     if ($ok && $http >= 200 && $http < 300 && is_file($tmp) && filesize($tmp) >= 1024) return;
 
     @unlink($tmp);
-    $phpError = 'HTTP ' . $http . ($err !== '' ? ': ' . $err : '');
-    $curlBin = '/usr/bin/curl';
-    if (!is_executable($curlBin) || !function_exists('proc_open')) {
-        throw new RuntimeException('Download Anvisa falhou via PHP cURL ' . $phpError);
-    }
+    $primaryError = 'HTTP ' . $http . ($err !== '' ? ': ' . $err : '');
+    $needsChainRepair = str_contains(strtolower($err), 'issuer certificate') || str_contains(strtolower($err), 'certificate verify') || str_contains(strtolower($err), 'ssl certificate');
+    if (!$needsChainRepair) throw new RuntimeException('Download Anvisa falhou ' . $primaryError);
 
-    $cmd = [$curlBin, '--fail', '--location', '--silent', '--show-error', '--retry', '3', '--retry-delay', '2', '--connect-timeout', '30', '--max-time', '240', '--user-agent', 'Farmacia-SuperAmplitude/1.0'];
-    if ($ca !== '') { $cmd[] = '--cacert'; $cmd[] = $ca; }
-    $cmd[] = '--output'; $cmd[] = $tmp; $cmd[] = $url;
-    $pipes = [];
-    $proc = proc_open($cmd, [0 => ['pipe','r'], 1 => ['pipe','w'], 2 => ['pipe','w']], $pipes);
-    if (!is_resource($proc)) throw new RuntimeException('Falha ao iniciar curl do sistema após erro ' . $phpError);
-    fclose($pipes[0]);
-    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
-    $code = proc_close($proc);
-    if ($code !== 0 || !is_file($tmp) || filesize($tmp) < 1024) {
-        @unlink($tmp);
-        $cliError = trim((string)$stderr);
-        if ($cliError === '') $cliError = trim((string)$stdout);
-        throw new RuntimeException('Download Anvisa falhou; PHP=' . $phpError . '; CLI=' . ($cliError !== '' ? $cliError : 'exit ' . $code));
+    $bundle = '';
+    try {
+        $bundle = $buildAiaBundle($host, $ca);
+        if ($bundle === '') throw new RuntimeException('bundle AIA não gerado');
+        [$ok2, $http2, $err2] = $curlDownload($url, $tmp, $bundle);
+        if (!$ok2 || $http2 < 200 || $http2 >= 300 || !is_file($tmp) || filesize($tmp) < 1024) {
+            @unlink($tmp);
+            throw new RuntimeException('Download com cadeia AIA falhou HTTP ' . $http2 . ($err2 !== '' ? ': ' . $err2 : ''));
+        }
+        echo "ANVISA_DOWNLOAD_TLS_VERIFIED=ok\n";
+    } finally {
+        if ($bundle !== '') @unlink($bundle);
     }
-    echo "ANVISA_DOWNLOAD_FALLBACK=system_curl\n";
 };
 
 try {
@@ -94,7 +214,7 @@ try {
     $run->execute();
     $rid = (int)$db->lastInsertId();
 
-    $downloadSecure($url, $tmp);
+    $downloadSecure($url, $tmp, $sourceHost);
     if (!is_file($tmp) || filesize($tmp) < 1024) throw new RuntimeException('CSV Anvisa vazio ou incompleto');
 
     $fh = fopen($tmp, 'rb');
