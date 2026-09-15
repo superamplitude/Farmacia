@@ -5,13 +5,9 @@ require dirname(__DIR__) . '/src/bootstrap.php';
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: public, max-age=300');
 
-$rows = Catalog::categories($db, 30);
 $payload = [
     'total' => Catalog::total($db),
-    'categories' => array_map(static fn(array $row): array => [
-        'name' => (string)$row['category'],
-        'total' => (int)$row['total'],
-    ], $rows),
+    'categories' => Catalog::consumerCategoryCounts($db),
 ];
 
 $json = json_encode(
