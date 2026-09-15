@@ -6,13 +6,24 @@ define('APP_ROOT', dirname(__DIR__));
 function load_env_file(string $file): void
 {
     if (!is_file($file)) return;
-    foreach (file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+
+    // Parse the full file first so the last occurrence of a duplicated key wins.
+    // External process environment still has precedence when it is non-empty.
+    $values = [];
+    foreach (file($file, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
         $line = trim($line);
         if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) continue;
         [$k, $v] = explode('=', $line, 2);
         $k = trim($k);
-        $v = trim($v, " \t\n\r\0\x0B\"'");
-        if ($k !== '' && getenv($k) === false) putenv($k . '=' . $v);
+        if ($k === '' || preg_match('/^[A-Z_][A-Z0-9_]*$/i', $k) !== 1) continue;
+        $values[$k] = trim($v, " \t\n\r\0\x0B\"'");
+    }
+
+    foreach ($values as $k => $v) {
+        $current = getenv($k);
+        if ($current === false || trim((string)$current) === '') {
+            putenv($k . '=' . $v);
+        }
     }
 }
 
@@ -80,6 +91,8 @@ if (PHP_SAPI !== 'cli' && !headers_sent()) {
     header('Referrer-Policy: strict-origin-when-cross-origin');
     header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
     header('X-Frame-Options: SAMEORIGIN');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
 }
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
@@ -105,4 +118,5 @@ require APP_ROOT . '/src/PaymentGateway.php';
 $db = Database::connection();
 Schema::migrate($db);
 Auth::bootstrapAdmin($db);
-Pharmacy::ensureDefault($db);
+$defaultPharmacy = Pharmacy::ensureDefault($db);
+Auth::bootstrapStoreAdmin($db, (int)$defaultPharmacy['id']);
