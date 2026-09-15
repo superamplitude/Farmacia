@@ -25,9 +25,27 @@ bash "$(dirname "$0")/preflight.sh" strict
 [[ "$STATE_DIR" == "/home/superamplitude-farmacia/.farmacia" ]] || fail "state dir inesperado: $STATE_DIR"
 mkdir -p "$STATE_DIR/backups" "$STATE_DIR/uploads"
 
+TS="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="$STATE_DIR/backups/pre-deploy-${TS}"
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR" 2>/dev/null || true
+
+if [[ -d "$APP_DIR" ]] && find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+  log "Criando backup consistente antes da alteração"
+  tar -czf "$BACKUP_DIR/app.tar.gz" --exclude='.git' -C "$APP_DIR" .
+  [[ -f "$STATE_DIR/.env" ]] && cp -a "$STATE_DIR/.env" "$BACKUP_DIR/.env"
+  if [[ -f "$STATE_DIR/farmacia.sqlite" ]]; then
+    SRC_DB="$STATE_DIR/farmacia.sqlite" DST_DB="$BACKUP_DIR/farmacia.sqlite" php -r '
+      $src=getenv("SRC_DB"); $dst=getenv("DST_DB");
+      $db=new PDO("sqlite:".$src); $db->setAttribute(PDO::ATTR_ERRMODE,PDO::ERRMODE_EXCEPTION);
+      $dst=str_replace("\'","\'\'",$dst); $db->exec("VACUUM INTO \"".str_replace("\"","\"\"",$dst)."\"");
+    '
+  fi
+  echo "PRE_DEPLOY_BACKUP=$BACKUP_DIR"
+fi
+
 if [[ ! -d "$APP_DIR/.git" ]]; then
   log "Inicializando árvore Git de produção"
-  TS="$(date +%Y%m%d-%H%M%S)"
   if find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
     tar -czf "$STATE_DIR/backups/pre-git-init-${TS}.tar.gz" -C "$APP_DIR" .
     echo "PRE_GIT_BACKUP=$STATE_DIR/backups/pre-git-init-${TS}.tar.gz"
@@ -46,19 +64,42 @@ cd "$APP_DIR"
 
 log "Preparando configuração privada"
 if [[ ! -f "$STATE_DIR/.env" ]]; then cp .env.example "$STATE_DIR/.env"; fi
-chmod 640 "$STATE_DIR/.env" 2>/dev/null || true
+chmod 660 "$STATE_DIR/.env" 2>/dev/null || true
 [[ -r "$STATE_DIR/.env" && -w "$STATE_DIR/.env" ]] || fail "runner não consegue ler/escrever o .env privado"
 
 set_env() {
   local key="$1" value="$2" file="$STATE_DIR/.env"
-  if grep -q "^${key}=" "$file"; then sed -i "s#^${key}=.*#${key}=${value}#" "$file"; else printf '%s=%s\n' "$key" "$value" >> "$file"; fi
+  if grep -q "^${key}=" "$file"; then sed -i "s#^${key}=.*#${key}=${value}#g" "$file"; else printf '%s=%s\n' "$key" "$value" >> "$file"; fi
 }
 ensure_env() {
   local key="$1" value="${2:-}" file="$STATE_DIR/.env"
   grep -q "^${key}=" "$file" || printf '%s=%s\n' "$key" "$value" >> "$file"
 }
 get_env(){ grep "^${1}=" "$STATE_DIR/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true; }
+looks_placeholder(){
+  local v="${1:-}" u
+  u="$(printf '%s' "$v" | tr '[:lower:]' '[:upper:]')"
+  [[ "$u" == *COLE_AQUI* || "$u" == *YOUR_* || "$u" == *CHANGEME* || "$u" == *CHANGE_ME* || "$u" == *PLACEHOLDER* || "$u" == *EXAMPLE* ]]
+}
+normalize_env(){
+  local file="$STATE_DIR/.env" tmp="$STATE_DIR/.env.normalize.$$"
+  awk '
+    /^[A-Za-z_][A-Za-z0-9_]*=/ {
+      key=$0; sub(/=.*/,"",key); value[key]=$0;
+      if (!(key in seen)) { order[++n]=key; seen[key]=1 }
+      next
+    }
+    { misc[++m]=$0 }
+    END {
+      for (i=1;i<=m;i++) print misc[i];
+      for (i=1;i<=n;i++) print value[order[i]];
+    }
+  ' "$file" > "$tmp"
+  cat "$tmp" > "$file"
+  rm -f "$tmp"
+}
 
+normalize_env
 set_env APP_BASE "/"
 set_env APP_URL "https://${DOMAIN}"
 set_env PRIVATE_STATE_DIR "$STATE_DIR"
@@ -91,18 +132,26 @@ ensure_env IMAGE_DISCOVERY_TIMEOUT "18"
 ensure_env IMAGE_DISCOVERY_CANDIDATES "4"
 ensure_env IMAGE_MANIFEST_PATH "$STATE_DIR/image-manifest.json"
 
-# Persist only R2-specific secrets already supplied to this deployment through
-# GitHub Actions. Values are never printed to the logs.
+# Import R2 secrets only when they are actually present in the Actions environment.
+# Secret values are never printed.
 R2_ENV_ACCESS="${R2_ACCESS_KEY_ID:-${CLOUDFLARE_R2_ACCESS_KEY_ID:-}}"
 R2_ENV_SECRET="${R2_SECRET_ACCESS_KEY:-${CLOUDFLARE_R2_SECRET_ACCESS_KEY:-}}"
-if [[ -n "$R2_ENV_ACCESS" && -n "$R2_ENV_SECRET" ]]; then
+if [[ -n "$R2_ENV_ACCESS" && -n "$R2_ENV_SECRET" ]] && ! looks_placeholder "$R2_ENV_ACCESS" && ! looks_placeholder "$R2_ENV_SECRET"; then
   set_env R2_ACCESS_KEY_ID "$R2_ENV_ACCESS"
   set_env R2_SECRET_ACCESS_KEY "$R2_ENV_SECRET"
   echo "R2_SECRET_BRIDGE=configured"
 else
+  CURRENT_R2_ACCESS="$(get_env R2_ACCESS_KEY_ID)"
+  CURRENT_R2_SECRET="$(get_env R2_SECRET_ACCESS_KEY)"
+  if looks_placeholder "$CURRENT_R2_ACCESS" || looks_placeholder "$CURRENT_R2_SECRET"; then
+    set_env R2_ACCESS_KEY_ID ""
+    set_env R2_SECRET_ACCESS_KEY ""
+    echo "R2_PLACEHOLDER_CREDENTIALS=sanitized"
+  fi
   echo "R2_SECRET_BRIDGE=not_available"
 fi
-unset R2_ENV_ACCESS R2_ENV_SECRET CLOUDFLARE_R2_ACCESS_KEY_ID CLOUDFLARE_R2_SECRET_ACCESS_KEY
+unset R2_ENV_ACCESS R2_ENV_SECRET CURRENT_R2_ACCESS CURRENT_R2_SECRET CLOUDFLARE_R2_ACCESS_KEY_ID CLOUDFLARE_R2_SECRET_ACCESS_KEY
+normalize_env
 
 if [[ -z "$(get_env APP_KEY)" ]]; then set_env APP_KEY "$(openssl rand -hex 32)"; fi
 if [[ -z "$(get_env SUPERADMIN_EMAIL)" ]]; then set_env SUPERADMIN_EMAIL "admin@superamplitude.com"; fi
@@ -127,8 +176,11 @@ echo "PHP_LINT_ALL=ok"
 log "Sincronizando base Anvisa"
 php scripts/import_anvisa.php
 
+log "Materializando catálogo da farmácia"
+php scripts/seed_store_catalog.php
+
 if [[ "$(get_env IMAGE_DISCOVERY_ENABLED)" == "1" ]]; then
-  log "Descobrindo imagens de produtos nas referências autorizadas"
+  log "Descobrindo imagens de produtos nas referências configuradas"
   php scripts/collect_product_images.php || true
 fi
 
@@ -139,9 +191,12 @@ php scripts/image_status.php || true
 log "Executando self-test"
 php scripts/self_test.php
 
+log "Executando auditoria ponta a ponta"
+php scripts/production_audit.php
+
 R2_ACCESS="$(get_env R2_ACCESS_KEY_ID)"
 R2_SECRET="$(get_env R2_SECRET_ACCESS_KEY)"
-if [[ -n "$R2_ACCESS" && -n "$R2_SECRET" ]]; then
+if [[ -n "$R2_ACCESS" && -n "$R2_SECRET" ]] && ! looks_placeholder "$R2_ACCESS" && ! looks_placeholder "$R2_SECRET"; then
   log "Validando escrita R2"
   php scripts/r2_check.php
   echo "R2_WRITE=ok"
@@ -149,6 +204,10 @@ else
   echo "R2_WRITE=pending_private_credentials"
 fi
 unset R2_ACCESS R2_SECRET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
+
+if [[ -f "$STATE_DIR/pharmacy-admin.credentials" ]]; then
+  echo "PHARMACY_ADMIN_CREDENTIALS=$STATE_DIR/pharmacy-admin.credentials"
+fi
 
 if [[ "$(get_env PAYMENT_PROVIDER)" == "mercadopago" && -n "$(get_env MERCADOPAGO_ACCESS_TOKEN)" ]]; then
   echo "PAYMENT_GATEWAY=mercadopago_configured"
@@ -162,4 +221,5 @@ else
   echo "AI_MODE=safe_catalog_fallback"
 fi
 
+[[ -d "$BACKUP_DIR" ]] && echo "ROLLBACK_READY=bash $APP_DIR/deploy/rollback-release.sh $BACKUP_DIR"
 echo "FARMACIA_DEPLOY_OK commit=$(git rev-parse --short HEAD) domain=${DOMAIN} site_user=${APP_USER} app=${APP_DIR} state=${STATE_DIR}"
