@@ -23,7 +23,7 @@ try {
     $add('database_connection', false, $e->getMessage());
 }
 
-foreach (['pharmacies','medications','pharmacy_products','users','orders','prescriptions','audit_logs'] as $table) {
+foreach (['pharmacies','medications','pharmacy_products','users','orders','prescriptions','audit_logs','payment_events'] as $table) {
     try {
         $count = (int)$db->query('SELECT COUNT(*) FROM ' . $table)->fetchColumn();
         $add('table_' . $table, true, $count);
@@ -35,6 +35,8 @@ foreach (['pharmacies','medications','pharmacy_products','users','orders','presc
 try {
     $meds = (int)$db->query('SELECT COUNT(*) FROM medications')->fetchColumn();
     $add('anvisa_catalog_nonempty', $meds > 0, $meds);
+    $configuredProducts = (int)$db->query('SELECT COUNT(*) FROM pharmacy_products WHERE active=1 AND stock>0 AND price>0')->fetchColumn();
+    $add('store_products_configured', $configuredProducts > 0, $configuredProducts > 0 ? $configuredProducts : 'nenhum produto com preço/estoque ativo; catálogo sanitário continua pesquisável', false);
 } catch (Throwable $e) {
     $add('anvisa_catalog_nonempty', false, $e->getMessage());
 }
@@ -63,7 +65,21 @@ $add('r2_public_config', $r2['account_id'] !== '' && $r2['bucket'] !== '' && $r2
     'public' => $r2['public_base_url'],
 ]);
 $add('r2_write_credentials', R2Storage::readyForWrite(), R2Storage::readyForWrite() ? 'configured' : 'pending_private_credentials', false);
-$add('ai_provider_configured', (string)env('AI_ENABLED','0') !== '1' || (trim((string)env('AI_API_URL','')) !== '' && trim((string)env('AI_API_KEY','')) !== '' && trim((string)env('AI_MODEL','')) !== ''), (string)env('AI_ENABLED','0') === '1' ? 'enabled' : 'disabled_fallback_mode', false);
+
+$aiEnabled = (string)env('AI_ENABLED','0') === '1';
+$aiReady = !$aiEnabled || (trim((string)env('AI_API_URL','')) !== '' && trim((string)env('AI_API_KEY','')) !== '' && trim((string)env('AI_MODEL','')) !== '');
+$add('ai_provider_configured', $aiReady, $aiEnabled ? ($aiReady ? 'enabled' : 'missing_credentials') : 'disabled_fallback_mode', false);
+
+$paymentProvider = PaymentGateway::provider();
+$paymentReady = $paymentProvider !== 'mercadopago' || PaymentGateway::mercadoPagoReady();
+$add('payment_provider', $paymentReady, [
+    'provider' => $paymentProvider,
+    'pix_online' => PaymentGateway::mercadoPagoReady(),
+    'methods' => array_keys(PaymentGateway::availableMethods()),
+], false);
+
+$add('order_tracking_entrypoint', is_file(dirname(__DIR__) . '/pedido.php'), 'pedido.php');
+$add('payment_webhook_entrypoint', is_file(dirname(__DIR__) . '/api/payment_webhook.php'), 'api/payment_webhook.php');
 
 $result = [
     'ok' => $failed === [],
