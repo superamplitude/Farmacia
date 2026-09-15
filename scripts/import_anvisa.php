@@ -67,7 +67,8 @@ try {
     $requiredHeaders = ['NUMERO_REGISTRO_PRODUTO', 'NOME_PRODUTO'];
     foreach ($requiredHeaders as $requiredHeader) {
         if (!in_array($norm($requiredHeader), $keys, true)) {
-            throw new RuntimeException('CSV Anvisa incompatível: coluna ausente ' . $requiredHeader);
+            $visibleHeaders = implode(',', array_slice($keys, 0, 80));
+            throw new RuntimeException('CSV Anvisa incompatível: coluna ausente ' . $requiredHeader . '; headers=' . $visibleHeaders);
         }
     }
 
