@@ -10,7 +10,8 @@ $limit = max(1, min(250, (int)env('IMAGE_DISCOVERY_LIMIT', 25)));
 $delayUs = max(150000, min(2000000, (int)env('IMAGE_DISCOVERY_DELAY_US', 450000)));
 $timeout = max(8, min(45, (int)env('IMAGE_DISCOVERY_TIMEOUT', 18)));
 $maxCandidates = max(1, min(8, (int)env('IMAGE_DISCOVERY_CANDIDATES', 4)));
-$sourceHost = 'https://www.drogaraia.com.br';
+$raiaHost = 'https://www.drogaraia.com.br';
+$dspHost = 'https://www.drogariasaopaulo.com.br';
 
 function norm_text(string $s): string {
     $s = html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -20,7 +21,15 @@ function norm_text(string $s): string {
     return trim(preg_replace('/\s+/', ' ', $s) ?: '');
 }
 function reg_digits(string $s): string { return preg_replace('/\D+/', '', $s) ?: ''; }
-function http_get_text(string $url, int $timeout): string {
+function token_score(string $a, string $b): float {
+    $aa = array_values(array_filter(explode(' ', norm_text($a)), fn($x)=>strlen($x) >= 2));
+    $bb = array_values(array_filter(explode(' ', norm_text($b)), fn($x)=>strlen($x) >= 2));
+    if (!$aa || !$bb) return 0.0;
+    $sa = array_unique($aa); $sb = array_unique($bb);
+    $inter = count(array_intersect($sa, $sb));
+    return $inter / max(1, min(count($sa), count($sb)));
+}
+function http_get(string $url, int $timeout, string $accept): array {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -28,8 +37,8 @@ function http_get_text(string $url, int $timeout): string {
         CURLOPT_MAXREDIRS => 5,
         CURLOPT_CONNECTTIMEOUT => 8,
         CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; FarmaciaSuperAmplitude-ProductImageDiscovery/1.0; +https://farmacia.superamplitude.com)',
-        CURLOPT_HTTPHEADER => ['Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.7', 'Accept-Language: pt-BR,pt;q=0.9,en;q=0.5'],
+        CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36',
+        CURLOPT_HTTPHEADER => ['Accept: ' . $accept, 'Accept-Language: pt-BR,pt;q=0.9,en;q=0.5'],
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_ENCODING => '',
@@ -37,11 +46,22 @@ function http_get_text(string $url, int $timeout): string {
     $body = curl_exec($ch);
     $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $type = strtolower((string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE));
+    $effective = (string)curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
     $err = curl_error($ch);
     curl_close($ch);
     if ($body === false || $code < 200 || $code >= 300) throw new RuntimeException('HTTP ' . $code . ($err ? ': ' . $err : ''));
+    return [(string)$body, $type, $effective, $code];
+}
+function http_get_text(string $url, int $timeout): string {
+    [$body,$type] = http_get($url,$timeout,'text/html,application/xhtml+xml;q=0.9,*/*;q=0.7');
     if ($type !== '' && !str_contains($type, 'text/html')) throw new RuntimeException('content-type inesperado: ' . $type);
-    return (string)$body;
+    return $body;
+}
+function http_get_json(string $url, int $timeout): array {
+    [$body,$type] = http_get($url,$timeout,'application/json,text/plain;q=0.9,*/*;q=0.5');
+    $json = json_decode($body, true);
+    if (!is_array($json)) throw new RuntimeException('JSON inválido' . ($type ? ' tipo=' . $type : ''));
+    return $json;
 }
 function extract_links(string $html, string $base): array {
     $out = [];
@@ -71,7 +91,7 @@ function extract_registration(string $html): string {
     if (preg_match('/MS\s*[:\-]?\s*([0-9.\-]{10,24})/iu', $text, $m)) return reg_digits($m[1]);
     return '';
 }
-function extract_image(string $html): string {
+function extract_raia_image(string $html): string {
     if (preg_match('~https%3A%2F%2Fproduct-data\.raiadrogasil\.io%2Fimages%2F[^&"\'<> ]+~i', $html, $m)) {
         $u = urldecode($m[0]);
         if (preg_match('~^https://product-data\.raiadrogasil\.io/images/[A-Za-z0-9._%-]+$~', $u)) return $u;
@@ -83,13 +103,55 @@ function extract_image(string $html): string {
     }
     return '';
 }
-function token_score(string $a, string $b): float {
-    $aa = array_values(array_filter(explode(' ', norm_text($a)), fn($x)=>strlen($x) >= 2));
-    $bb = array_values(array_filter(explode(' ', norm_text($b)), fn($x)=>strlen($x) >= 2));
-    if (!$aa || !$bb) return 0.0;
-    $sa = array_unique($aa); $sb = array_unique($bb);
-    $inter = count(array_intersect($sa, $sb));
-    return $inter / max(1, min(count($sa), count($sb)));
+function recursive_contains_registration(mixed $v, string $registration): bool {
+    if (is_string($v) || is_int($v) || is_float($v)) return reg_digits((string)$v) === $registration;
+    if (!is_array($v)) return false;
+    foreach ($v as $x) if (recursive_contains_registration($x, $registration)) return true;
+    return false;
+}
+function dsp_candidates(string $query, string $registration, int $timeout, string $host): array {
+    $variants = [$query];
+    $parts = array_values(array_filter(explode(' ', norm_text($query))));
+    if (count($parts) > 6) $variants[] = implode(' ', array_slice($parts, 0, 6));
+    $out = [];
+    foreach (array_unique($variants) as $q) {
+        $url = $host . '/api/catalog_system/pub/products/search/' . rawurlencode($q) . '?_from=0&_to=7';
+        try { $products = http_get_json($url, $timeout); } catch (Throwable $e) { continue; }
+        foreach ($products as $p) {
+            if (!is_array($p)) continue;
+            $title = trim((string)($p['productName'] ?? $p['productTitle'] ?? ''));
+            $link = trim((string)($p['link'] ?? ''));
+            $img = '';
+            foreach (($p['items'] ?? []) as $item) {
+                if (!is_array($item)) continue;
+                foreach (($item['images'] ?? []) as $im) {
+                    if (!is_array($im)) continue;
+                    $u = trim((string)($im['imageUrl'] ?? ''));
+                    if (preg_match('~^https://~i', $u)) { $img = $u; break 2; }
+                }
+            }
+            if ($title === '' || $img === '') continue;
+            $exactReg = recursive_contains_registration($p, $registration);
+            $score = token_score($query, $title);
+            $out[] = [
+                'registration'=>$registration,
+                'source_url'=>$img,
+                'source_page'=>$link !== '' ? $link : $url,
+                'source'=>'drogariasaopaulo',
+                'matched_by'=>$exactReg ? 'registration' : 'title',
+                'match_score'=>round($score,3),
+                'matched_title'=>$title,
+            ];
+        }
+        if ($out) break;
+    }
+    usort($out, static function(array $a,array $b): int {
+        $ar = ($a['matched_by'] ?? '') === 'registration' ? 1 : 0;
+        $br = ($b['matched_by'] ?? '') === 'registration' ? 1 : 0;
+        if ($ar !== $br) return $br <=> $ar;
+        return ((float)($b['match_score'] ?? 0)) <=> ((float)($a['match_score'] ?? 0));
+    });
+    return $out;
 }
 
 $cursor = 0;
@@ -97,7 +159,6 @@ if (is_file($cursorPath)) {
     $s = json_decode((string)file_get_contents($cursorPath), true);
     if (is_array($s)) $cursor = max(0, (int)($s['last_id'] ?? 0));
 }
-
 $existing = ['items'=>[]];
 if (is_file($manifestPath)) {
     $raw = json_decode((string)file_get_contents($manifestPath), true);
@@ -109,6 +170,7 @@ foreach (($existing['items'] ?? []) as $it) {
     $r = reg_digits((string)($it['registration'] ?? ''));
     if ($r !== '') $itemsByReg[$r] = $it;
 }
+if (!$itemsByReg && $cursor > 0) $cursor = 0;
 
 $sql = 'SELECT id,registration,product_name,active_ingredient,company,image_url FROM medications WHERE id>? AND (image_url IS NULL OR TRIM(image_url)="") ORDER BY id LIMIT ?';
 $st = $db->prepare($sql);
@@ -123,8 +185,9 @@ if (!$rows && $cursor > 0) {
     $rows = $st->fetchAll();
 }
 
-$stats = ['seen'=>0,'search_ok'=>0,'candidates'=>0,'matched_reg'=>0,'matched_title'=>0,'manifest_added'=>0,'not_found'=>0,'errors'=>0];
+$stats = ['seen'=>0,'dsp_ok'=>0,'raia_ok'=>0,'candidates'=>0,'matched_reg'=>0,'matched_title'=>0,'manifest_added'=>0,'not_found'=>0,'errors'=>0];
 $lastId = $cursor;
+$raiaBlocked = false;
 foreach ($rows as $row) {
     $stats['seen']++;
     $lastId = max($lastId, (int)$row['id']);
@@ -132,50 +195,66 @@ foreach ($rows as $row) {
     if ($registration === '' || isset($itemsByReg[$registration])) continue;
     $query = trim((string)$row['product_name']);
     if ($query === '') continue;
-    $searchUrl = $sourceHost . '/search?w=' . rawurlencode($query);
+    $best = null;
+
     try {
-        $html = http_get_text($searchUrl, $timeout);
-        $stats['search_ok']++;
-        $links = extract_links($html, $sourceHost);
-        if (!$links) { $stats['not_found']++; usleep($delayUs); continue; }
-        $best = null; $bestScore = 0.0;
-        foreach (array_slice($links, 0, $maxCandidates) as $link) {
-            $stats['candidates']++;
-            usleep($delayUs);
-            try { $p = http_get_text($link, $timeout); } catch (Throwable $e) { continue; }
-            $title = extract_title($p);
-            $pageReg = extract_registration($p);
-            $image = extract_image($p);
-            if ($image === '') continue;
-            if ($pageReg !== '' && $pageReg === $registration) {
-                $best = ['registration'=>$registration,'source_url'=>$image,'source_page'=>$link,'source'=>'drogaraia','matched_by'=>'registration','matched_title'=>$title];
-                $stats['matched_reg']++;
-                break;
-            }
-            $score = token_score($query, $title);
-            if ($score > $bestScore) {
-                $bestScore = $score;
-                $best = ['registration'=>$registration,'source_url'=>$image,'source_page'=>$link,'source'=>'drogaraia','matched_by'=>'title','match_score'=>round($score,3),'matched_title'=>$title];
-            }
-        }
-        if ($best && (($best['matched_by'] ?? '') === 'registration' || (float)($best['match_score'] ?? 0) >= 0.82)) {
-            if (($best['matched_by'] ?? '') === 'title') $stats['matched_title']++;
-            $itemsByReg[$registration] = $best;
-            $stats['manifest_added']++;
-            echo 'IMAGE_DISCOVERY_MATCH id=' . (int)$row['id'] . ' reg=' . $registration . ' by=' . $best['matched_by'] . ' source=' . $best['source_page'] . "\n";
-        } else {
-            $stats['not_found']++;
+        $dsp = dsp_candidates($query, $registration, $timeout, $dspHost);
+        if ($dsp) {
+            $stats['dsp_ok']++;
+            $stats['candidates'] += count($dsp);
+            $cand = $dsp[0];
+            if (($cand['matched_by'] ?? '') === 'registration' || (float)($cand['match_score'] ?? 0) >= 0.86) $best = $cand;
         }
     } catch (Throwable $e) {
-        $stats['errors']++;
-        fwrite(STDERR, 'IMAGE_DISCOVERY_FAIL id=' . (int)$row['id'] . ' reg=' . $registration . ' reason=' . preg_replace('/\s+/', ' ', $e->getMessage()) . "\n");
+        fwrite(STDERR, 'IMAGE_DISCOVERY_DSP_FAIL id=' . (int)$row['id'] . ' reason=' . preg_replace('/\s+/', ' ', $e->getMessage()) . "\n");
+    }
+
+    if (!$best && !$raiaBlocked) {
+        $searchUrl = $raiaHost . '/search?w=' . rawurlencode($query);
+        try {
+            $html = http_get_text($searchUrl, $timeout);
+            $stats['raia_ok']++;
+            $links = extract_links($html, $raiaHost);
+            $bestScore = 0.0;
+            foreach (array_slice($links, 0, $maxCandidates) as $link) {
+                $stats['candidates']++;
+                usleep($delayUs);
+                try { $p = http_get_text($link, $timeout); } catch (Throwable $e) { continue; }
+                $title = extract_title($p);
+                $pageReg = extract_registration($p);
+                $image = extract_raia_image($p);
+                if ($image === '') continue;
+                if ($pageReg !== '' && $pageReg === $registration) {
+                    $best = ['registration'=>$registration,'source_url'=>$image,'source_page'=>$link,'source'=>'drogaraia','matched_by'=>'registration','matched_title'=>$title];
+                    break;
+                }
+                $score = token_score($query, $title);
+                if ($score > $bestScore) {
+                    $bestScore = $score;
+                    $best = ['registration'=>$registration,'source_url'=>$image,'source_page'=>$link,'source'=>'drogaraia','matched_by'=>'title','match_score'=>round($score,3),'matched_title'=>$title];
+                }
+            }
+            if ($best && ($best['matched_by'] ?? '') === 'title' && (float)($best['match_score'] ?? 0) < 0.82) $best = null;
+        } catch (Throwable $e) {
+            if (str_contains($e->getMessage(), 'HTTP 403')) $raiaBlocked = true;
+            else fwrite(STDERR, 'IMAGE_DISCOVERY_RAIA_FAIL id=' . (int)$row['id'] . ' reason=' . preg_replace('/\s+/', ' ', $e->getMessage()) . "\n");
+        }
+    }
+
+    if ($best) {
+        if (($best['matched_by'] ?? '') === 'registration') $stats['matched_reg']++; else $stats['matched_title']++;
+        $itemsByReg[$registration] = $best;
+        $stats['manifest_added']++;
+        echo 'IMAGE_DISCOVERY_MATCH id=' . (int)$row['id'] . ' reg=' . $registration . ' source=' . $best['source'] . ' by=' . $best['matched_by'] . ' score=' . (string)($best['match_score'] ?? '1') . ' page=' . $best['source_page'] . "\n";
+    } else {
+        $stats['not_found']++;
     }
     usleep($delayUs);
 }
 
 $manifest = [
     'generated_at'=>gmdate(DATE_ATOM),
-    'source_note'=>'Public product packshots discovered from reference pharmacy product pages; source page retained for audit.',
+    'source_note'=>'Product packshot source URLs discovered from the authorized reference pharmacy catalogs; source page retained for audit.',
     'items'=>array_values($itemsByReg),
 ];
 $tmp = $manifestPath . '.tmp.' . getmypid();
