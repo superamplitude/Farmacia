@@ -36,8 +36,6 @@ if [[ ! -d "$APP_DIR/.git" ]]; then
   git clone "$REPO" "$APP_DIR"
 fi
 
-# O document root pertence ao Site User do CloudPanel e é operado pelo farmrunner via ACL.
-# Marcar exclusivamente este caminho como confiável evita o bloqueio "dubious ownership" do Git.
 git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
 
 log "Sincronizando produção com main"
@@ -48,12 +46,16 @@ cd "$APP_DIR"
 
 log "Preparando configuração privada"
 if [[ ! -f "$STATE_DIR/.env" ]]; then cp .env.example "$STATE_DIR/.env"; fi
-chmod 640 "$STATE_DIR/.env" || true
+chmod 640 "$STATE_DIR/.env" 2>/dev/null || true
 [[ -r "$STATE_DIR/.env" && -w "$STATE_DIR/.env" ]] || fail "runner não consegue ler/escrever o .env privado"
 
 set_env() {
   local key="$1" value="$2" file="$STATE_DIR/.env"
   if grep -q "^${key}=" "$file"; then sed -i "s#^${key}=.*#${key}=${value}#" "$file"; else printf '%s=%s\n' "$key" "$value" >> "$file"; fi
+}
+ensure_env() {
+  local key="$1" value="${2:-}" file="$STATE_DIR/.env"
+  grep -q "^${key}=" "$file" || printf '%s=%s\n' "$key" "$value" >> "$file"
 }
 get_env(){ grep "^${1}=" "$STATE_DIR/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true; }
 
@@ -67,6 +69,22 @@ set_env R2_BUCKET "$R2_BUCKET"
 set_env R2_ENDPOINT "$R2_ENDPOINT"
 set_env R2_CATALOG_URL "$R2_CATALOG_URL"
 
+ensure_env PAYMENT_PROVIDER "delivery"
+ensure_env MERCADOPAGO_API_BASE "https://api.mercadopago.com"
+ensure_env MERCADOPAGO_ACCESS_TOKEN ""
+ensure_env MERCADOPAGO_WEBHOOK_SECRET ""
+ensure_env AI_ENABLED "0"
+ensure_env AI_PROVIDER "openai-compatible"
+ensure_env AI_API_URL ""
+ensure_env AI_API_KEY ""
+ensure_env AI_MODEL ""
+ensure_env SNCR_ENABLED "0"
+ensure_env SNCR_BASE_URL ""
+ensure_env SNCR_CLIENT_ID ""
+ensure_env SNCR_CLIENT_SECRET ""
+ensure_env R2_ACCESS_KEY_ID ""
+ensure_env R2_SECRET_ACCESS_KEY ""
+
 if [[ -z "$(get_env APP_KEY)" ]]; then set_env APP_KEY "$(openssl rand -hex 32)"; fi
 if [[ -z "$(get_env SUPERADMIN_EMAIL)" ]]; then set_env SUPERADMIN_EMAIL "admin@superamplitude.com"; fi
 if [[ -z "$(get_env SUPERADMIN_PASSWORD)" ]]; then
@@ -77,7 +95,7 @@ if [[ -z "$(get_env SUPERADMIN_PASSWORD)" ]]; then
     printf 'SUPERADMIN_PASSWORD=%q\n' "$ADMIN_PASSWORD"
     printf 'CREATED_AT=%q\n' "$(date -Is)"
   } > "$STATE_DIR/superadmin.credentials"
-  chmod 600 "$STATE_DIR/superadmin.credentials"
+  chmod 600 "$STATE_DIR/superadmin.credentials" 2>/dev/null || true
   unset ADMIN_PASSWORD
   echo "SUPERADMIN_CREDENTIALS=$STATE_DIR/superadmin.credentials"
 fi
@@ -96,14 +114,26 @@ php scripts/sync_images.php || true
 log "Executando self-test"
 php scripts/self_test.php
 
-R2_ACCESS="$(grep '^R2_ACCESS_KEY_ID=' "$STATE_DIR/.env" | cut -d= -f2- || true)"
-R2_SECRET="$(grep '^R2_SECRET_ACCESS_KEY=' "$STATE_DIR/.env" | cut -d= -f2- || true)"
+R2_ACCESS="$(get_env R2_ACCESS_KEY_ID)"
+R2_SECRET="$(get_env R2_SECRET_ACCESS_KEY)"
 if [[ -n "$R2_ACCESS" && -n "$R2_SECRET" ]]; then
   log "Validando escrita R2"
   php scripts/r2_check.php
   echo "R2_WRITE=ok"
 else
   echo "R2_WRITE=pending_private_credentials"
+fi
+
+if [[ "$(get_env PAYMENT_PROVIDER)" == "mercadopago" && -n "$(get_env MERCADOPAGO_ACCESS_TOKEN)" ]]; then
+  echo "PAYMENT_GATEWAY=mercadopago_configured"
+else
+  echo "PAYMENT_GATEWAY=delivery_methods_active_pix_pending_credentials"
+fi
+
+if [[ "$(get_env AI_ENABLED)" == "1" ]]; then
+  echo "AI_MODE=provider_enabled"
+else
+  echo "AI_MODE=safe_catalog_fallback"
 fi
 
 echo "FARMACIA_DEPLOY_OK commit=$(git rev-parse --short HEAD) domain=${DOMAIN} site_user=${APP_USER} app=${APP_DIR} state=${STATE_DIR}"
