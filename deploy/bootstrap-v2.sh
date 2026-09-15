@@ -36,6 +36,10 @@ if [[ ! -d "$APP_DIR/.git" ]]; then
   git clone "$REPO" "$APP_DIR"
 fi
 
+# O document root pertence ao Site User do CloudPanel e é operado pelo farmrunner via ACL.
+# Marcar exclusivamente este caminho como confiável evita o bloqueio "dubious ownership" do Git.
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+
 log "Sincronizando produção com main"
 git -C "$APP_DIR" fetch origin main
 git -C "$APP_DIR" reset --hard origin/main
