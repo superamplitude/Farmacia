@@ -110,6 +110,7 @@ php scripts/import_anvisa.php
 
 log "Sincronizando imagens"
 php scripts/sync_images.php || true
+php scripts/image_status.php || true
 
 log "Executando self-test"
 php scripts/self_test.php
