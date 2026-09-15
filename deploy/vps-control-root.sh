@@ -111,8 +111,20 @@ EOF
   echo "PHP_POOL_CREATED=${PHP_POOL_FALLBACK} listen=127.0.0.1:${port}" >&2
   printf '%s|%s\n' "$PHP_POOL_FALLBACK" "127.0.0.1:${port}"
 }
+listener_ready(){
+  local listen="$1" host port
+  case "$listen" in
+    unix:*) [[ -S "${listen#unix:}" ]] ;;
+    /*) [[ -S "$listen" ]] ;;
+    *:*)
+      host="${listen%:*}"; port="${listen##*:}"
+      php -r '$s=@fsockopen($argv[1],(int)$argv[2],$e,$es,2); if(!$s){fwrite(STDERR,"FPM_CONNECT_FAIL {$e} {$es}\n"); exit(1);} fclose($s);' "$host" "$port"
+      ;;
+    *) return 1 ;;
+  esac
+}
 ensure_php_pool(){
-  local found pool listen testbin
+  local found pool listen testbin i
   found="$(find_existing_php_pool || true)"
   if [[ -z "$found" ]]; then found="$(create_php_pool)"; fi
   pool="${found%%|*}"
@@ -122,9 +134,21 @@ ensure_php_pool(){
   if [[ -n "$testbin" ]]; then "$testbin" -t >/tmp/farmacia-php-fpm-test.out 2>&1 || { cat /tmp/farmacia-php-fpm-test.out >&2; fail 'php-fpm config test failed'; }; fi
   systemctl restart "php${PHP_VERSION}-fpm"
   systemctl is-active --quiet "php${PHP_VERSION}-fpm" || fail 'php8.2-fpm did not become active'
-  echo "PHP_FPM_POOL=${pool}"
-  echo "PHP_FPM_LISTEN=${listen}"
-  printf '%s' "$listen"
+  for i in $(seq 1 20); do
+    if listener_ready "$listen" >/dev/null 2>&1; then
+      echo "PHP_FPM_POOL=${pool}" >&2
+      echo "PHP_FPM_LISTEN=${listen}" >&2
+      echo "PHP_FPM_READY=1" >&2
+      printf '%s' "$listen"
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo '--- php8.2-fpm journal ---' >&2
+  journalctl -u php8.2-fpm -n 120 --no-pager >&2 || true
+  echo '--- php8.2 listeners ---' >&2
+  ss -ltnp >&2 || true
+  fail "php8.2-fpm listener not reachable: ${listen}"
 }
 fastcgi_target(){
   local listen="$1"
@@ -137,57 +161,57 @@ fastcgi_target(){
 repair_php_vhost(){
   validate_contract
   local listen target ts backup tmp
-  listen="$(ensure_php_pool | tail -n1)"
+  listen="$(ensure_php_pool)"
   target="$(fastcgi_target "$listen")"
   ts="$(date +%Y%m%d-%H%M%S)"
   backup="/root/farmacia-vhost-${ts}.conf.bak"
   cp -a "$VHOST" "$backup"
   tmp="$(mktemp)"
   VHOST_SRC="$VHOST" VHOST_DST="$tmp" FASTCGI_TARGET="$target" python3 <<'PY'
-import os, re, sys
+import os, re
 src=os.environ['VHOST_SRC']; dst=os.environ['VHOST_DST']; target=os.environ['FASTCGI_TARGET']
 text=open(src,encoding='utf-8').read()
-if 'root /home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com;' not in text:
+root='root /home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com;'
+if root not in text:
     raise SystemExit('ROOT_CONTRACT_MISMATCH')
+# Canonical index order for a PHP application.
+if re.search(r'(?m)^\s*index\s+[^;]+;', text):
+    text=re.sub(r'(?m)^\s*index\s+[^;]+;', '  index index.php index.html;', text, count=1)
+else:
+    text=text.replace(root, root+'\n  index index.php index.html;', 1)
 needle='proxy_pass http://127.0.0.1:3005/;'
 pos=text.find(needle)
-if pos < 0:
-    if 'fastcgi_pass' in text:
-        open(dst,'w',encoding='utf-8').write(text)
-        print('VHOST_ALREADY_PHP=1')
-        raise SystemExit(0)
-    raise SystemExit('EXPECTED_PROXY_NOT_FOUND')
-# Locate containing location block by scanning braces around proxy line.
-line_start=text.rfind('\n',0,pos)+1
-block_start=None
-depth=0
-for i in range(line_start-1,-1,-1):
-    ch=text[i]
-    if ch=='}': depth += 1
-    elif ch=='{':
-        if depth==0:
-            prefix=text[max(0,text.rfind('\n',0,i)+1):i]
-            if re.search(r'\blocation\b',prefix):
-                block_start=max(0,text.rfind('\n',0,i)+1)
-                break
-        else: depth -= 1
-if block_start is None: raise SystemExit('PROXY_LOCATION_START_NOT_FOUND')
-brace=text.find('{',block_start)
-depth=0; block_end=None
-for i in range(brace,len(text)):
-    if text[i]=='{': depth += 1
-    elif text[i]=='}':
-        depth -= 1
-        if depth==0:
-            block_end=i+1
-            break
-if block_end is None: raise SystemExit('PROXY_LOCATION_END_NOT_FOUND')
-replacement=f'''  location / {{\n    try_files $uri $uri/ /index.php?$query_string;\n  }}\n\n  location ~ \\.php$ {{\n    try_files $uri =404;\n    include fastcgi_params;\n    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n    fastcgi_param SCRIPT_NAME $fastcgi_script_name;\n    fastcgi_index index.php;\n    fastcgi_pass {target};\n  }}'''
-new=text[:block_start]+replacement+text[block_end:]
-if not re.search(r'(?m)^\s*index\s+',new):
-    new=new.replace('root /home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com;', 'root /home/superamplitude-farmacia/htdocs/farmacia.superamplitude.com;\n  index index.php index.html;',1)
-open(dst,'w',encoding='utf-8').write(new)
-print('VHOST_PROXY_REPLACED=1')
+if pos >= 0:
+    line_start=text.rfind('\n',0,pos)+1
+    block_start=None; depth=0
+    for i in range(line_start-1,-1,-1):
+        ch=text[i]
+        if ch=='}': depth += 1
+        elif ch=='{':
+            if depth==0:
+                prefix=text[max(0,text.rfind('\n',0,i)+1):i]
+                if re.search(r'\blocation\b',prefix):
+                    block_start=max(0,text.rfind('\n',0,i)+1)
+                    break
+            else: depth -= 1
+    if block_start is None: raise SystemExit('PROXY_LOCATION_START_NOT_FOUND')
+    brace=text.find('{',block_start); depth=0; block_end=None
+    for i in range(brace,len(text)):
+        if text[i]=='{': depth += 1
+        elif text[i]=='}':
+            depth -= 1
+            if depth==0:
+                block_end=i+1; break
+    if block_end is None: raise SystemExit('PROXY_LOCATION_END_NOT_FOUND')
+    replacement=f'''  location / {{\n    try_files $uri $uri/ /index.php?$query_string;\n  }}\n\n  location ~ \\.php$ {{\n    try_files $uri =404;\n    include fastcgi_params;\n    fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n    fastcgi_param SCRIPT_NAME $fastcgi_script_name;\n    fastcgi_index index.php;\n    fastcgi_pass {target};\n  }}'''
+    text=text[:block_start]+replacement+text[block_end:]
+    print('VHOST_PROXY_REPLACED=1')
+elif re.search(r'(?m)^\s*fastcgi_pass\s+[^;]+;', text):
+    text=re.sub(r'(?m)^(\s*fastcgi_pass\s+)[^;]+;', lambda m: m.group(1)+target+';', text, count=1)
+    print('VHOST_PHP_REFRESHED=1')
+else:
+    raise SystemExit('NO_PROXY_OR_FASTCGI_FOUND')
+open(dst,'w',encoding='utf-8').write(text)
 PY
   chown root:root "$tmp"
   chmod --reference="$VHOST" "$tmp" 2>/dev/null || chmod 0644 "$tmp"
@@ -204,27 +228,43 @@ PY
   echo "VHOST_FASTCGI_PASS=${target}"
   echo "VPS_VHOST_REPAIR=OK"
 }
+refresh_ca(){
+  command -v update-ca-certificates >/dev/null 2>&1 || fail 'update-ca-certificates missing'
+  update-ca-certificates >/tmp/farmacia-ca-refresh.out 2>&1 || { cat /tmp/farmacia-ca-refresh.out >&2; fail 'CA refresh failed'; }
+  [[ -s /etc/ssl/certs/ca-certificates.crt ]] || fail 'system CA bundle missing after refresh'
+  echo 'VPS_CA_CERTIFICATES=OK'
+}
 diagnose(){
   echo "VPS_CONTRACT domain=${DOMAIN} site_user=${APP_USER} site_group=${APP_GROUP} app=${APP_DIR} state=${STATE_DIR}"
   permission_debug
-  echo '--- vhost root / upstream ---'
-  grep -nE '^[[:space:]]*(root|index|fastcgi_pass|proxy_pass|server_name)[[:space:]]' "$VHOST" 2>/dev/null || true
+  echo '--- active vhost ---'
+  sed -n '1,180p' "$VHOST" 2>/dev/null || true
   echo '--- php-fpm pools for site user ---'
-  grep -RHE '^[[:space:]]*(user|group|listen)[[:space:]]*=' "$PHP_POOL_DIR"/*.conf 2>/dev/null | grep -E "${APP_USER}|listen" | head -80 || true
+  grep -RHE '^[[:space:]]*(user|group|listen)[[:space:]]*=' "$PHP_POOL_DIR"/*.conf 2>/dev/null | grep -E "${APP_USER}|listen" | head -100 || true
+  echo '--- listeners ---'
+  ss -ltnp 2>/dev/null | grep -E '(:443\b|:190[0-9]{2}\b|:191[0-9]{2}\b)' || true
   echo '--- nginx config test ---'
   nginx -t 2>&1 || true
   echo '--- services ---'
   systemctl is-active nginx 2>/dev/null || true
   systemctl is-active php8.2-fpm 2>/dev/null || true
   systemctl is-active github-actions-farmacia 2>/dev/null || true
+  echo '--- php8.2-fpm recent journal ---'
+  journalctl -u php8.2-fpm -n 100 --no-pager 2>/dev/null || true
   echo '--- origin health ---'
-  curl -k -sS -D - --resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/?health=1" -o /tmp/farmacia-origin-body || true
-  head -c 1200 /tmp/farmacia-origin-body 2>/dev/null || true; echo
+  curl -k -sS -D - --max-time 15 --resolve "${DOMAIN}:443:127.0.0.1" "https://${DOMAIN}/?health=1" -o /tmp/farmacia-origin-body || true
+  head -c 1600 /tmp/farmacia-origin-body 2>/dev/null || true; echo
   echo '--- public health ---'
-  curl -k -sS -D - "https://${DOMAIN}/?health=1" -o /tmp/farmacia-public-body || true
-  head -c 1200 /tmp/farmacia-public-body 2>/dev/null || true; echo
+  curl -k -sS -D - --max-time 15 "https://${DOMAIN}/?health=1" -o /tmp/farmacia-public-body || true
+  head -c 1600 /tmp/farmacia-public-body 2>/dev/null || true; echo
   echo '--- nginx recent errors ---'
-  tail -n 120 /var/log/nginx/error.log 2>/dev/null || true
+  tail -n 160 /var/log/nginx/error.log 2>/dev/null || true
+  local site_error
+  site_error="$(awk '$1=="error_log" {gsub(/;/,"",$2); print $2; exit}' "$VHOST" 2>/dev/null || true)"
+  if [[ -n "$site_error" && -f "$site_error" && "$site_error" != "/var/log/nginx/error.log" ]]; then
+    echo "--- site error log ${site_error} ---"
+    tail -n 160 "$site_error" 2>/dev/null || true
+  fi
 }
 
 require_root
@@ -244,6 +284,9 @@ case "$CMD" in
     fix_permissions
     repair_php_vhost
     ;;
+  refresh-ca)
+    refresh_ca
+    ;;
   diagnose)
     diagnose
     ;;
@@ -253,8 +296,7 @@ case "$CMD" in
     echo 'VPS_NGINX_RELOAD=OK'
     ;;
   php82-restart)
-    systemctl restart php8.2-fpm
-    systemctl is-active --quiet php8.2-fpm
+    ensure_php_pool >/dev/null
     echo 'VPS_PHP82_RESTART=OK'
     ;;
   *) fail "unsupported command ${CMD}" ;;
