@@ -84,6 +84,12 @@ ensure_env SNCR_CLIENT_ID ""
 ensure_env SNCR_CLIENT_SECRET ""
 ensure_env R2_ACCESS_KEY_ID ""
 ensure_env R2_SECRET_ACCESS_KEY ""
+ensure_env IMAGE_DISCOVERY_ENABLED "1"
+ensure_env IMAGE_DISCOVERY_LIMIT "25"
+ensure_env IMAGE_DISCOVERY_DELAY_US "450000"
+ensure_env IMAGE_DISCOVERY_TIMEOUT "18"
+ensure_env IMAGE_DISCOVERY_CANDIDATES "4"
+ensure_env IMAGE_MANIFEST_PATH "$STATE_DIR/image-manifest.json"
 
 if [[ -z "$(get_env APP_KEY)" ]]; then set_env APP_KEY "$(openssl rand -hex 32)"; fi
 if [[ -z "$(get_env SUPERADMIN_EMAIL)" ]]; then set_env SUPERADMIN_EMAIL "admin@superamplitude.com"; fi
@@ -107,6 +113,11 @@ echo "PHP_LINT_ALL=ok"
 
 log "Sincronizando base Anvisa"
 php scripts/import_anvisa.php
+
+if [[ "$(get_env IMAGE_DISCOVERY_ENABLED)" == "1" ]]; then
+  log "Descobrindo imagens de produtos nas referências autorizadas"
+  php scripts/collect_product_images.php || true
+fi
 
 log "Sincronizando imagens"
 php scripts/sync_images.php || true
