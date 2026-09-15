@@ -157,7 +157,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $q = trim((string)($_GET['q'] ?? ''));
-$meds = Catalog::publicSearch($db, $pid, $q, 80);
+$cat = trim((string)($_GET['cat'] ?? ''));
+$categoryLabel = Catalog::categoryLabel($cat);
+$meds = Catalog::publicSearch($db, $pid, $q, 80, $cat);
+$categories = Catalog::consumerCategories();
 $cartRows = [];
 $subtotal = 0.0;
 foreach ($cart as $id => $qty) {
@@ -175,25 +178,53 @@ foreach ($cart as $id => $qty) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title><?=h($pharmacy['name'])?></title>
+<meta name="description" content="Farmácia online com busca no catálogo Anvisa, atendimento farmacêutico, retirada e delivery.">
 <link rel="stylesheet" href="<?=h(url('assets/app.css'))?>">
 </head>
 <body>
-<header><div class="wrap top"><div><strong><?=h($pharmacy['name'])?></strong><small>Farmácia, atendimento e delivery</small></div><nav><a href="<?=h(url())?>">Loja</a><a href="#carrinho">Carrinho (<?=count($cart)?>)</a><a href="<?=h(url('admin.php'))?>">Painel</a></nav></div></header>
+<div class="utility-bar"><div class="wrap utility-inner"><span>Atendimento seguro e catálogo Anvisa</span><span>Retirada e delivery conforme disponibilidade da farmácia</span></div></div>
+<header class="store-header">
+  <div class="wrap store-head-main">
+    <a class="brand" href="<?=h(url())?>"><span class="brand-mark">+</span><span><strong><?=h($pharmacy['name'])?></strong><small>Farmácia SuperAmplitude</small></span></a>
+    <form class="head-search" method="get" role="search">
+      <?php if($cat !== ''):?><input type="hidden" name="cat" value="<?=h($cat)?>"><?php endif;?>
+      <input name="q" value="<?=h($q)?>" placeholder="O que você precisa? Busque por medicamento, princípio ativo ou laboratório" aria-label="Pesquisar medicamentos">
+      <button type="submit">Buscar</button>
+    </form>
+    <div class="head-actions">
+      <a href="#carrinho" class="head-action"><span>Entrega</span><b>Informe seu CEP</b></a>
+      <a href="<?=h(url('admin.php'))?>" class="head-action"><span>Acesso</span><b>Painel</b></a>
+      <a href="#carrinho" class="cart-action"><span>Carrinho</span><b><?=count($cart)?> item(ns)</b></a>
+    </div>
+  </div>
+  <nav class="category-strip" aria-label="Categorias de medicamentos">
+    <div class="wrap category-strip-inner">
+      <a class="<?=($cat===''?'active':'')?>" href="<?=h(url())?>">Todos os medicamentos</a>
+      <?php foreach($categories as $category):?>
+        <a class="<?=($cat===$category['slug']?'active':'')?>" href="<?=h(url('?cat=' . rawurlencode($category['slug'])))?>"><?=h($category['name'])?></a>
+      <?php endforeach;?>
+    </div>
+  </nav>
+</header>
+
 <main class="wrap">
-<section class="hero"><div><span class="eyebrow">Busca inteligente + avaliação farmacêutica</span><h1>Encontre seu medicamento e receba com segurança.</h1><p>Pesquise a base cadastrada da Anvisa por nome comercial, princípio ativo, laboratório ou registro. A compra só é liberada quando a farmácia informa preço, estoque e disponibilidade.</p><form method="get"><input name="q" value="<?=h($q)?>" placeholder="Ex.: dipirona, losartana, laboratório..."><button>Pesquisar</button></form></div></section>
+<section class="hero storefront-hero"><div><span class="eyebrow">Farmácia online + avaliação farmacêutica</span><h1>Encontre medicamentos com rapidez e informação confiável.</h1><p>Consulte o catálogo cadastrado na Anvisa. Preço, estoque e compra só são liberados quando configurados pela farmácia.</p><form method="get" class="hero-search"><?php if($cat !== ''):?><input type="hidden" name="cat" value="<?=h($cat)?>"><?php endif;?><input name="q" value="<?=h($q)?>" placeholder="Ex.: dipirona, losartana, omeprazol..."><button>Pesquisar</button></form><div class="quick-links"><a href="?q=dipirona">Dipirona</a><a href="?q=paracetamol">Paracetamol</a><a href="?q=losartana">Losartana</a><a href="?q=omeprazol">Omeprazol</a></div></div></section>
+
+<div class="service-highlights"><div><b>Busca em 32 mil+ cadastros</b><span>Nome, princípio ativo, laboratório e registro.</span></div><div><b>Receita protegida</b><span>Upload privado quando o medicamento exigir.</span></div><div><b>Retirada ou delivery</b><span>Fluxo preparado para disponibilidade local.</span></div><div><b>Atendimento farmacêutico</b><span>Medicamentos controlados passam por avaliação.</span></div></div>
+
 <?php if($flash):?><div class="flash"><?=h($flash)?></div><?php endif;?>
 
-<section>
-<div class="section-title"><h2><?=$q !== '' ? 'Resultado da busca' : 'Produtos disponíveis'?></h2><span><?=count($meds)?> itens exibidos</span></div>
-<?php if(!$meds):?><div class="empty"><?=$q !== '' ? 'Nenhum medicamento correspondente foi encontrado na base.' : 'Nenhum produto foi ativado nesta farmácia. Use a pesquisa para consultar a base Anvisa.'?></div><?php else:?><div class="grid">
+<section class="catalog-section">
+<div class="section-title"><div><span class="section-kicker">Catálogo</span><h2><?php if($q !== ''):?>Resultado para “<?=h($q)?>”<?php elseif($categoryLabel !== ''):?><?=h($categoryLabel)?><?php else:?>Medicamentos em destaque<?php endif;?></h2></div><span><?=count($meds)?> itens exibidos</span></div>
+<?php if(!$meds):?><div class="empty">Nenhum medicamento correspondente foi encontrado na base.</div><?php else:?><div class="grid">
 <?php foreach($meds as $m): $available=(int)$m['store_active']===1 && (int)$m['store_stock']>0 && (float)$m['store_price']>0;?>
-<article class="card"><img src="<?=h(med_image($m))?>" alt="<?=h($m['product_name'])?>"><div class="cardbody"><span class="tag"><?=h($m['regulatory_category']?:'Cadastro Anvisa')?></span><h3><?=h($m['product_name'])?></h3><p><?=h($m['active_ingredient'])?></p><small><?=h($m['company'])?><?php if(!empty($m['registration'])):?> · Reg. <?=h($m['registration'])?><?php endif;?></small><div class="flags"><?php if((int)$m['controlled']):?><b>Controle especial · exige avaliação</b><?php elseif((int)$m['requires_prescription']):?><b>Venda sob prescrição</b><?php else:?><b>Cadastro sanitário consultável</b><?php endif;?></div>
-<?php if($available):?><div class="stock">Estoque: <?=h($m['store_stock'])?></div><div class="price">R$ <?=number_format((float)$m['store_price'],2,',','.')?></div><form method="post"><input type="hidden" name="_csrf" value="<?=h(csrf_token())?>"><input type="hidden" name="action" value="add"><input type="hidden" name="id" value="<?=$m['id']?>"><button>Adicionar</button></form><?php else:?><div class="stock">Consulte disponibilidade, preço e estoque com a farmácia.</div><button disabled>Indisponível para compra online</button><?php endif;?>
+<article class="card"><div class="product-media"><img loading="lazy" src="<?=h(med_image($m))?>" alt="<?=h($m['product_name'])?>"></div><div class="cardbody"><span class="tag"><?=h($m['regulatory_category']?:'Cadastro Anvisa')?></span><h3><?=h($m['product_name'])?></h3><p><?=h($m['active_ingredient'])?></p><small><?=h($m['company'])?><?php if(!empty($m['registration'])):?> · Reg. <?=h($m['registration'])?><?php endif;?></small><div class="flags"><?php if((int)$m['controlled']):?><b>Controle especial · exige avaliação</b><?php elseif((int)$m['requires_prescription']):?><b>Venda sob prescrição</b><?php else:?><b>Cadastro sanitário consultável</b><?php endif;?></div>
+<?php if($available):?><div class="stock">Estoque: <?=h($m['store_stock'])?></div><div class="price">R$ <?=number_format((float)$m['store_price'],2,',','.')?></div><form method="post"><input type="hidden" name="_csrf" value="<?=h(csrf_token())?>"><input type="hidden" name="action" value="add"><input type="hidden" name="id" value="<?=$m['id']?>"><button>Adicionar ao carrinho</button></form><?php else:?><div class="stock">Consulte disponibilidade, preço e estoque com a farmácia.</div><button disabled>Indisponível para compra online</button><?php endif;?>
 </div></article>
 <?php endforeach;?></div><?php endif;?>
 </section>
 
-<section id="carrinho" class="cart"><div class="section-title"><h2>Carrinho e entrega</h2><strong>Subtotal R$ <?=number_format($subtotal,2,',','.')?></strong></div>
+<section id="carrinho" class="cart"><div class="section-title"><div><span class="section-kicker">Finalização</span><h2>Carrinho e entrega</h2></div><strong>Subtotal R$ <?=number_format($subtotal,2,',','.')?></strong></div>
 <?php if(!$cartRows):?><p>Seu carrinho está vazio.</p><?php else:?><ul><?php foreach($cartRows as [$m,$qty,$price]):?><li><span><?=h($m['product_name'])?> × <?=$qty?></span><b>R$ <?=number_format($price*$qty,2,',','.')?></b></li><?php endforeach;?></ul>
 <form method="post" enctype="multipart/form-data" class="checkout"><input type="hidden" name="_csrf" value="<?=h(csrf_token())?>"><input type="hidden" name="action" value="checkout"><input name="name" placeholder="Nome completo" required><input type="email" name="email" placeholder="E-mail" required><input name="phone" placeholder="Telefone / WhatsApp"><select name="delivery_type"><option value="delivery">Delivery</option><option value="pickup">Retirada na farmácia</option></select><input name="zip" placeholder="CEP"><input name="address" placeholder="Rua, número e complemento"><input name="city" placeholder="Cidade"><input name="state" placeholder="UF" maxlength="2"><select name="payment_method"><?php foreach($paymentMethods as $value=>$label):?><option value="<?=h($value)?>"><?=h($label)?></option><?php endforeach;?></select><input name="delivery_notes" placeholder="Referência / observações"><label class="file">Receita (PDF/JPG/PNG), quando exigida <input type="file" name="prescription" accept=".pdf,.jpg,.jpeg,.png"></label><button>Enviar pedido para a farmácia</button></form>
 <form method="post"><input type="hidden" name="_csrf" value="<?=h(csrf_token())?>"><input type="hidden" name="action" value="clear"><button class="ghost">Limpar carrinho</button></form><?php endif;?></section>
@@ -201,7 +232,9 @@ foreach ($cart as $id => $qty) {
 <section class="trust"><div><b>Receita protegida</b><span>Arquivo privado, acessível somente à equipe autorizada.</span></div><div><b>Farmacêutico no fluxo</b><span>Pedidos que exigem receita ficam bloqueados até análise.</span></div><div><b>Delivery rastreável</b><span>Status operacional separado para pagamento, separação e entrega.</span></div></section>
 <p class="notice">O chat oferece informação geral e pesquisa do catálogo. Ele não substitui médico ou farmacêutico, não prescreve e não define dose individual.</p>
 </main>
-<div id="ai-chat" class="chat" data-endpoint="<?=h(url('api/chat.php'))?>"><div class="chat-head"><b>Assistente da Farmácia</b><small>Pergunte sobre o catálogo</small></div><div class="chat-log"><div class="msg ai"><p>Olá! Posso pesquisar medicamentos, mostrar dados cadastrais e trazer informações do catálogo. Para orientação clínica, a equipe farmacêutica valida a resposta.</p></div></div><form><input placeholder="Digite o nome ou sua dúvida..." autocomplete="off"><button>Enviar</button></form></div>
+
+<div id="ai-chat" class="chat" data-endpoint="<?=h(url('api/chat.php'))?>"><div class="chat-head"><div><b>Assistente da Farmácia</b><small>Pergunte sobre o catálogo</small></div><button type="button" class="chat-close" aria-label="Fechar chat" title="Fechar chat">×</button></div><div class="chat-log"><div class="msg ai"><p>Olá! Posso pesquisar medicamentos e mostrar dados cadastrais do catálogo. Para orientação clínica, a equipe farmacêutica valida a resposta.</p></div></div><form><input placeholder="Digite o nome ou sua dúvida..." autocomplete="off"><button>Enviar</button></form></div>
+<button type="button" id="ai-chat-open" class="chat-open" hidden>Chat</button>
 <script src="<?=h(url('assets/chat.js'))?>"></script>
-<footer><div class="wrap"><?=h($pharmacy['name'])?> · Sistema SuperAmplitude</div></footer>
+<footer><div class="wrap footer-inner"><span><?=h($pharmacy['name'])?></span><span>Sistema SuperAmplitude</span></div></footer>
 </body></html>
