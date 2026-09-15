@@ -22,8 +22,8 @@ final class Catalog
         $limit = max(1, min(200, $limit));
         if ($q === '') return $db->query('SELECT * FROM medications ORDER BY product_name LIMIT ' . $limit)->fetchAll();
         $like = '%' . $q . '%';
-        $st = $db->prepare('SELECT * FROM medications WHERE product_name LIKE ? OR active_ingredient LIKE ? OR company LIKE ? OR registration LIKE ? ORDER BY product_name LIMIT ' . $limit);
-        $st->execute([$like, $like, $like, $like]);
+        $st = $db->prepare('SELECT * FROM medications WHERE product_name LIKE ? OR active_ingredient LIKE ? OR company LIKE ? OR registration LIKE ? OR regulatory_category LIKE ? OR therapeutic_class LIKE ? ORDER BY product_name LIMIT ' . $limit);
+        $st->execute([$like, $like, $like, $like, $like, $like]);
         return $st->fetchAll();
     }
 
@@ -36,18 +36,38 @@ final class Catalog
                 FROM medications m
                 LEFT JOIN pharmacy_products pp ON pp.medication_id=m.id AND pp.pharmacy_id=?';
 
-        if ($q === '') {
-            $sql .= ' WHERE COALESCE(pp.active,0)=1';
-        } else {
+        if ($q !== '') {
             $like = '%' . $q . '%';
-            $sql .= ' WHERE (m.product_name LIKE ? OR m.active_ingredient LIKE ? OR m.company LIKE ? OR m.registration LIKE ?)';
-            array_push($args, $like, $like, $like, $like);
+            $sql .= ' WHERE (m.product_name LIKE ? OR m.active_ingredient LIKE ? OR m.company LIKE ? OR m.registration LIKE ? OR m.regulatory_category LIKE ? OR m.therapeutic_class LIKE ?)';
+            array_push($args, $like, $like, $like, $like, $like, $like);
         }
 
-        $sql .= ' ORDER BY COALESCE(pp.active,0) DESC, m.product_name LIMIT ' . $limit;
+        $sql .= ' ORDER BY COALESCE(pp.active,0) DESC, CASE WHEN m.image_url IS NOT NULL AND m.image_url<>\'\' THEN 0 ELSE 1 END, m.product_name LIMIT ' . $limit;
         $st = $db->prepare($sql);
         $st->execute($args);
         return $st->fetchAll();
+    }
+
+    public static function categories(PDO $db, int $limit = 24): array
+    {
+        $limit = max(1, min(60, $limit));
+        $sql = "SELECT category, COUNT(*) total FROM (
+                    SELECT CASE
+                        WHEN TRIM(COALESCE(regulatory_category,'')) <> '' THEN TRIM(regulatory_category)
+                        WHEN TRIM(COALESCE(therapeutic_class,'')) <> '' THEN TRIM(therapeutic_class)
+                        ELSE 'Outros'
+                    END category
+                    FROM medications
+                ) x
+                GROUP BY category
+                ORDER BY total DESC, category ASC
+                LIMIT " . $limit;
+        return $db->query($sql)->fetchAll();
+    }
+
+    public static function total(PDO $db): int
+    {
+        return (int)$db->query('SELECT COUNT(*) FROM medications')->fetchColumn();
     }
 
     public static function storeProduct(PDO $db, int $pharmacyId, int $medicationId): ?array
