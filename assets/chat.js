@@ -1,4 +1,50 @@
 (()=>{
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+
+  const initCatalog=async()=>{
+    const grid=document.querySelector('.grid');
+    const empty=document.querySelector('.empty');
+    const anchor=grid||empty;
+    if(!anchor)return;
+    const section=anchor.closest('section');
+    const title=section?.querySelector('.section-title');
+    if(!section||!title)return;
+
+    try{
+      const endpoint=new URL('api/categories.php',location.href);
+      const r=await fetch(endpoint.toString(),{cache:'no-store'});
+      if(!r.ok)return;
+      const data=await r.json();
+      if(!Array.isArray(data.categories)||!data.categories.length)return;
+
+      const wrap=document.createElement('div');
+      wrap.className='catalog-categories';
+      wrap.setAttribute('aria-label','Categorias de medicamentos');
+      Object.assign(wrap.style,{display:'flex',gap:'8px',overflowX:'auto',padding:'4px 0 14px',margin:'0 0 10px',scrollbarWidth:'thin'});
+
+      const makeLink=(label,count,q,active=false)=>{
+        const u=new URL(location.href);
+        if(q)u.searchParams.set('q',q);else u.searchParams.delete('q');
+        u.hash='';
+        const a=document.createElement('a');
+        a.href=u.pathname+(u.search||'');
+        a.textContent=count===null?label:`${label} (${count})`;
+        Object.assign(a.style,{display:'inline-flex',alignItems:'center',whiteSpace:'nowrap',padding:'9px 12px',borderRadius:'999px',border:'1px solid #d0d5dd',background:active?'#136f63':'#fff',color:active?'#fff':'#344054',fontSize:'13px',fontWeight:'700'});
+        return a;
+      };
+
+      const current=(new URL(location.href)).searchParams.get('q')||'';
+      wrap.appendChild(makeLink('Todos os produtos',Number(data.total||0),null,current===''));
+      data.categories.forEach(c=>wrap.appendChild(makeLink(String(c.name||'Outros'),Number(c.total||0),String(c.name||''),current===String(c.name||''))));
+      title.insertAdjacentElement('afterend',wrap);
+
+      const counter=title.querySelector('span');
+      if(counter&&Number(data.total)>0&&current==='')counter.textContent=`${Number(data.total).toLocaleString('pt-BR')} produtos cadastrados · exibindo os primeiros ${document.querySelectorAll('.card').length}`;
+    }catch(_){/* catálogo continua funcional mesmo se o menu não carregar */}
+  };
+
+  initCatalog();
+
   const box=document.querySelector('#ai-chat');
   if(!box)return;
 
@@ -44,7 +90,6 @@
     if(e.key==='Escape'&&!box.hidden)setOpen(false);
   });
 
-  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
   const safeUrl=v=>{try{const u=new URL(String(v),location.origin);return['http:','https:'].includes(u.protocol)?esc(u.href):''}catch{return''}};
   const add=(who,html)=>{const d=document.createElement('div');d.className='msg '+who;d.innerHTML=html;log.appendChild(d);log.scrollTop=log.scrollHeight;};
 
