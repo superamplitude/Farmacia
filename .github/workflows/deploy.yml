@@ -20,16 +20,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Prepare VPS bridge
+        run: |
+          if sudo -n /usr/local/sbin/farmacia-vps-control prepare; then
+            echo "VPS_BRIDGE=ready"
+          else
+            echo "VPS_BRIDGE=not_installed"
+            echo "Run deploy/install-vps-control.sh once as root on the VPS."
+            exit 1
+          fi
+
       - name: Diagnose environment
         run: bash deploy/preflight.sh report
-
-      - name: Repair deployment permissions
-        run: |
-          if sudo -n /usr/local/sbin/farmacia-fix-permissions; then
-            echo "ROOT_PERMISSION_REPAIR=ok"
-          else
-            echo "ROOT_PERMISSION_REPAIR=unavailable"
-          fi
 
       - name: Enforce production preflight
         run: bash deploy/preflight.sh strict
@@ -40,3 +42,7 @@ jobs:
       - name: Verify production and collect evidence
         if: always()
         run: bash deploy/verify.sh
+
+      - name: Collect root diagnostics on failure
+        if: failure()
+        run: sudo -n /usr/local/sbin/farmacia-vps-control diagnose || true
