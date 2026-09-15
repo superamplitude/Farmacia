@@ -38,7 +38,7 @@ if [[ -d "$APP_DIR" ]] && find "$APP_DIR" -mindepth 1 -maxdepth 1 -print -quit |
     SRC_DB="$STATE_DIR/farmacia.sqlite" DST_DB="$BACKUP_DIR/farmacia.sqlite" php -r '
       $src=getenv("SRC_DB"); $dst=getenv("DST_DB");
       $db=new PDO("sqlite:".$src); $db->setAttribute(PDO::ATTR_ERRMODE,PDO::ERRMODE_EXCEPTION);
-      $dst=str_replace("\'","\'\'",$dst); $db->exec("VACUUM INTO \"".str_replace("\"","\"\"",$dst)."\"");
+      $quoted=$db->quote($dst); $db->exec("VACUUM INTO ".$quoted);
     '
   fi
   echo "PRE_DEPLOY_BACKUP=$BACKUP_DIR"
@@ -132,8 +132,6 @@ ensure_env IMAGE_DISCOVERY_TIMEOUT "18"
 ensure_env IMAGE_DISCOVERY_CANDIDATES "4"
 ensure_env IMAGE_MANIFEST_PATH "$STATE_DIR/image-manifest.json"
 
-# Import R2 secrets only when they are actually present in the Actions environment.
-# Secret values are never printed.
 R2_ENV_ACCESS="${R2_ACCESS_KEY_ID:-${CLOUDFLARE_R2_ACCESS_KEY_ID:-}}"
 R2_ENV_SECRET="${R2_SECRET_ACCESS_KEY:-${CLOUDFLARE_R2_SECRET_ACCESS_KEY:-}}"
 if [[ -n "$R2_ENV_ACCESS" && -n "$R2_ENV_SECRET" ]] && ! looks_placeholder "$R2_ENV_ACCESS" && ! looks_placeholder "$R2_ENV_SECRET"; then
