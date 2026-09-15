@@ -3,6 +3,17 @@ declare(strict_types=1);
 
 final class R2Storage
 {
+    private static function secretLooksReal(string $value, int $minLength): bool
+    {
+        $value = trim($value);
+        if (strlen($value) < $minLength) return false;
+        $upper = strtoupper($value);
+        foreach (['COLE_AQUI', 'YOUR_', 'CHANGE_ME', 'CHANGEME', 'EXAMPLE', 'PLACEHOLDER', '<', '>'] as $bad) {
+            if (str_contains($upper, $bad)) return false;
+        }
+        return true;
+    }
+
     public static function config(): array
     {
         $account = trim((string)env('R2_ACCOUNT_ID', 'a26bcc0f570221207e6e66981adae363'));
@@ -21,10 +32,18 @@ final class R2Storage
         ];
     }
 
+    public static function credentialState(): string
+    {
+        $c = self::config();
+        if ($c['access_key'] === '' && $c['secret_key'] === '') return 'missing';
+        if (!self::secretLooksReal($c['access_key'], 12) || !self::secretLooksReal($c['secret_key'], 24)) return 'invalid_or_placeholder';
+        return 'configured';
+    }
+
     public static function readyForWrite(): bool
     {
         $c = self::config();
-        return $c['endpoint'] !== '' && $c['bucket'] !== '' && $c['access_key'] !== '' && $c['secret_key'] !== '';
+        return $c['endpoint'] !== '' && $c['bucket'] !== '' && self::credentialState() === 'configured';
     }
 
     public static function publicUrl(string $key): string
@@ -37,7 +56,7 @@ final class R2Storage
     {
         $c = self::config();
         if (!self::readyForWrite()) {
-            throw new RuntimeException('Credenciais R2 de escrita não configuradas.');
+            throw new RuntimeException('Credenciais R2 de escrita ausentes ou inválidas.');
         }
         $key = ltrim($key, '/');
         $host = parse_url($c['endpoint'], PHP_URL_HOST);
