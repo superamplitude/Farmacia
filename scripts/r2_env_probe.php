@@ -15,5 +15,7 @@ foreach($keys as $key){
     $v=getenv($key);
     if($v!==false && trim((string)$v)!=='')$present[]=$key;
 }
+$state = R2Storage::credentialState();
 echo 'R2_ENV_PRESENT=' . ($present?implode(',', $present):'none') . "\n";
+echo 'R2_CREDENTIAL_STATE=' . $state . "\n";
 echo 'R2_READY=' . (R2Storage::readyForWrite()?'yes':'no') . "\n";
